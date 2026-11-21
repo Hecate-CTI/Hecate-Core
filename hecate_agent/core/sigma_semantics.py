@@ -876,6 +876,21 @@ def non_deployable_source_values(detection: Dict[str, Any], category: str) -> Op
     return None
 
 
+def markdown_or_url_in_command_line(detection: Dict[str, Any]) -> Optional[str]:
+    """A rule whose CommandLine or Image contains raw markdown links or hyperlinked advisory text."""
+    for field in ("commandline", "image", "parentimage", "parentcommandline"):
+        for val in _field_values(detection, field):
+            text = str(val)
+            if any(marker in text for marker in ("](http", "](https", ") [", "<http://", "<https://")):
+                return (
+                    f"{field} contains markdown hyperlink syntax {text!r}; "
+                    "rule must match actual shell invocation, not advisory prose"
+                )
+            if field == "image" and any(marker in text.lower() for marker in ("http://", "https://", "www.")):
+                return f"Image field contains URL {text!r}; executables cannot be URLs"
+    return None
+
+
 def semantic_problem(
     detection: Dict[str, Any], category: str, description: str = "", named: Optional[List[str]] = None
 ) -> Optional[str]:
@@ -889,6 +904,7 @@ def semantic_problem(
         lambda: field_outside_category(detection, category),
         lambda: non_executable_image(detection),
         lambda: non_deployable_source_values(detection, category),
+        lambda: markdown_or_url_in_command_line(detection),
         lambda: unexpanded_environment_path(detection),
         lambda: registry_operation_mismatch(detection, category, description),
         lambda: argument_obfuscation_mismatch(detection, category, description),

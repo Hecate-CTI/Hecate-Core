@@ -307,6 +307,12 @@ _IP_FIELDS = frozenset({"ipaddress", "destinationip", "sourceip", "srcip", "dsti
 _PORT_FIELDS = frozenset({"destinationport", "sourceport", "srcport", "dstport"})
 _FILENAME_FIELDS = frozenset({"targetfilename", "image", "parentimage", "imageloaded", "originalfilename"})
 _SWITCH_RE = re.compile(r"(?:^|\s)(?:--?[A-Za-z][\w-]*|/[A-Za-z]{1,3})(?=\s|$)")
+_POSIX_SHORT_BINARIES = frozenset({
+    "sh", "bash", "zsh", "ksh", "csh", "ash", "dash", "tcsh",
+    "cp", "mv", "rm", "ln", "ps", "su", "id", "dd", "nc", "tar",
+    "sed", "awk", "cat", "env", "tee", "cut", "top", "vi", "vim", "zip", "at", "who",
+    "curl", "wget", "perl", "ruby", "python", "python3", "node", "java", "sudo",
+})
 
 
 def _looks_like_address(value: str, is_regex: bool = False) -> bool:
@@ -358,10 +364,17 @@ def _field_type_problem(detection: Dict[str, Any]) -> Optional[str]:
                 if base in _PORT_FIELDS and not text.strip().lstrip("-").isdigit():
                     return f"{field_name} holds a port number, but the detection matches on {text!r}"
                 if base in _FILENAME_FIELDS and _SWITCH_RE.search(text):
-                    return (
-                        f"{field_name} holds a file path, but the detection matches on {text!r}, "
-                        "which carries command-line switches; those belong in CommandLine"
+                    stripped = text.strip()
+                    is_posix_path = (
+                        stripped.startswith("/")
+                        and " " not in stripped
+                        and stripped.rsplit("/", 1)[-1].lower() in _POSIX_SHORT_BINARIES
                     )
+                    if not is_posix_path:
+                        return (
+                            f"{field_name} holds a file path, but the detection matches on {text!r}, "
+                            "which carries command-line switches; those belong in CommandLine"
+                        )
                 if base not in ["hashes", "md5", "sha1", "sha256", "imphash"]:
                     cleaned = text.strip().lower()
                     if len(cleaned) in (32, 40, 64) and _HEX_RE.match(cleaned):
