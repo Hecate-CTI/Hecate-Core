@@ -1,6 +1,5 @@
 """Tests for POSIX path linter rules and markdown link prevention in Sigma rules."""
 
-import pytest
 from hecate_agent.agents.llm.sigma.validators import _field_type_problem
 from hecate_agent.core.sigma_semantics import markdown_or_url_in_command_line, semantic_problem
 
