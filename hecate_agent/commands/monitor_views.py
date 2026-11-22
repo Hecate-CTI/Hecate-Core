@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import logging
 import re
-import sqlite3
 import textwrap
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import yaml
 from rich import box
 from rich.console import Console, Group
 from rich.layout import Layout
@@ -18,29 +16,93 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from hecate_agent.commands.monitor_delivery_panels import (
+    _collect_outbound_metrics as _collect_outbound_metrics,
+)
+from hecate_agent.commands.monitor_delivery_panels import (
+    _cti_feeds_panel as _cti_feeds_panel,
+)
+from hecate_agent.commands.monitor_delivery_panels import (
+    _github_outbox_panel as _github_outbox_panel,
+)
+from hecate_agent.commands.monitor_delivery_panels import (
+    _ingestion_funnel_panel as _ingestion_funnel_panel,
+)
+from hecate_agent.commands.monitor_delivery_panels import (
+    _misp_outbox_panel as _misp_outbox_panel,
+)
+from hecate_agent.commands.monitor_delivery_panels import (
+    _outbound_panel as _outbound_panel,
+)
+from hecate_agent.commands.monitor_format import (
+    _bar as _bar,
+)
+from hecate_agent.commands.monitor_hunt_panels import (
+    _detection_rules_panel as _detection_rules_panel,
+)
+from hecate_agent.commands.monitor_hunt_panels import (
+    _detections_panel as _detections_panel,
+)
+from hecate_agent.commands.monitor_hunt_panels import (
+    _hunts_panel as _hunts_panel,
+)
+from hecate_agent.commands.monitor_hunt_panels import (
+    _hunts_summary_panel as _hunts_summary_panel,
+)
+from hecate_agent.commands.monitor_hunt_panels import (
+    _hunts_table as _hunts_table,
+)
+from hecate_agent.commands.monitor_hunt_panels import (
+    _mitre_metrics_panel as _mitre_metrics_panel,
+)
+from hecate_agent.commands.monitor_hunt_panels import (
+    _purple_team_panel as _purple_team_panel,
+)
+from hecate_agent.commands.monitor_hunt_panels import (
+    _threat_observables_panel as _threat_observables_panel,
+)
 from hecate_agent.commands.monitor_integrations import (
     _INTEGRATION_IDS as _INTEGRATION_IDS,
+)
+from hecate_agent.commands.monitor_integrations import (
     _SOURCE_INTEGRATIONS as _SOURCE_INTEGRATIONS,
+)
+from hecate_agent.commands.monitor_integrations import (
     _confirmed_integration as _confirmed_integration,
+)
+from hecate_agent.commands.monitor_integrations import (
     _credential_status as _credential_status,
+)
+from hecate_agent.commands.monitor_integrations import (
     _credential_summary as _credential_summary,
+)
+from hecate_agent.commands.monitor_integrations import (
     _integration_style as _integration_style,
+)
+from hecate_agent.commands.monitor_integrations import (
     _integrations_panel,
 )
 from hecate_agent.commands.monitor_metrics import (
-    HuntsMetrics,
-    PurpleTeamMetrics,
-    SiemDriftMetrics,
+    _EXCLUDED_HUNT_DOCS as _EXCLUDED_HUNT_DOCS,
+)
+from hecate_agent.commands.monitor_metrics import (
+    _HUNTS_METRICS_CACHE as _HUNTS_METRICS_CACHE,
+)
+from hecate_agent.commands.monitor_metrics import (
+    _PURPLE_METRICS_CACHE as _PURPLE_METRICS_CACHE,
+)
+from hecate_agent.commands.monitor_metrics import (
+    _SIEM_METRICS_CACHE as _SIEM_METRICS_CACHE,
+)
+from hecate_agent.commands.monitor_metrics import (
     _collect_hunts_metrics,
     _collect_purple_team_metrics,
     _collect_siem_drift_metrics,
-    _EXCLUDED_HUNT_DOCS as _EXCLUDED_HUNT_DOCS,
-    _HUNTS_METRICS_CACHE as _HUNTS_METRICS_CACHE,
-    _PURPLE_METRICS_CACHE as _PURPLE_METRICS_CACHE,
-    _SIEM_METRICS_CACHE as _SIEM_METRICS_CACHE,
 )
 from hecate_agent.commands.monitor_samplers import (
     DiskSample as DiskSample,
+)
+from hecate_agent.commands.monitor_samplers import (
     HostSample,
     RunnerStatus,
     TrailEvent,
@@ -48,6 +110,24 @@ from hecate_agent.commands.monitor_samplers import (
     _percent,
     _service_running,
     _tail,
+)
+from hecate_agent.commands.monitor_validation_panels import (
+    _bas_events_panel as _bas_events_panel,
+)
+from hecate_agent.commands.monitor_validation_panels import (
+    _bas_status_panel as _bas_status_panel,
+)
+from hecate_agent.commands.monitor_validation_panels import (
+    _siem_drift_diff_panel as _siem_drift_diff_panel,
+)
+from hecate_agent.commands.monitor_validation_panels import (
+    _siem_drift_events_table as _siem_drift_events_table,
+)
+from hecate_agent.commands.monitor_validation_panels import (
+    _siem_query_versions_table as _siem_query_versions_table,
+)
+from hecate_agent.commands.monitor_validation_panels import (
+    _siem_sync_panel as _siem_sync_panel,
 )
 from hecate_agent.core.llm_activity import summarize_calls
 from hecate_agent.core.sqlite_utils import connect_sqlite_ro
@@ -79,15 +159,6 @@ def _bytes(value: Optional[int]) -> str:
             return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
         size /= 1024
     return "n/a"
-
-
-def _bar(value: Optional[float], width: int = 22) -> Text:
-    if value is None:
-        return Text("[ telemetry unavailable ]", style="dim")
-    value = max(0.0, min(100.0, value))
-    full = round(width * value / 100)
-    color = "bright_magenta" if value >= 85 else "bright_cyan"
-    return Text("█" * full + "░" * (width - full) + f" {value:5.1f}%", style=color)
 
 
 def _resource_panel(title: str, value: Optional[float], detail: str = "") -> Panel:
@@ -712,718 +783,6 @@ def _live_usage_panel(
     return Panel(table, title="[bold bright_cyan]LLM[/]", border_style="bright_magenta", box=box.ROUNDED)
 
 
-
-def _hunts_panel(
-    workspace: Optional[Path] = None,
-    narrow: bool = True,
-    compact: bool = False,
-    metrics: Optional[HuntsMetrics] = None,
-) -> Panel:
-    """A combined panel displaying summary metrics for hunts, threat observables, and factual grounding fidelity."""
-    h_metrics = metrics or _collect_hunts_metrics(workspace)
-
-    table = Table(box=None, show_header=False, expand=True, padding=(0, 1))
-    table.add_column("label", style="dim", width=11, min_width=10, no_wrap=True)
-    table.add_column("value", ratio=1, overflow="ellipsis", no_wrap=True)
-
-    if (
-        h_metrics.total_hunts == 0
-        and h_metrics.network_total == 0
-        and h_metrics.host_total == 0
-        and h_metrics.threats_count == 0
-    ):
-        table.add_row("HUNTS", Text("0 generated · standby", style="dim"))
-        table.add_row("THREATS", Text("0 tracked", style="dim"))
-        table.add_row("NETWORK", Text("0 IOCs · standby", style="dim"))
-        table.add_row("ENDPOINT", Text("0 IOCs · standby", style="dim"))
-        if not compact:
-            table.add_row("FIDELITY", Text("100% target · 0 unsupp", style="dim"))
-    else:
-        if h_metrics.total_hunts > 0:
-            hunts_text = f"{h_metrics.total_hunts} total"
-            hunts_sub = (
-                f"{h_metrics.drafts_count} drafts"
-                if not h_metrics.completed_count
-                else f"{h_metrics.drafts_count} drf · {h_metrics.completed_count} done"
-            )
-            hunts_parts = [(hunts_text, "bright_white"), (" · ", "dim"), (hunts_sub, "bright_cyan")]
-            table.add_row("HUNTS", Text.assemble(*hunts_parts))
-        else:
-            table.add_row("HUNTS", Text("0 generated · standby", style="dim"))
-
-        threats_val = f"{h_metrics.threats_count} threats" if not narrow else f"{h_metrics.threats_count}"
-        threats_sub = f"{h_metrics.actors_count} act, {h_metrics.campaigns_count} camp, {h_metrics.malware_count} mal"
-        table.add_row(
-            "THREATS",
-            Text.assemble((threats_val, "bright_white"), (" · ", "dim"), (threats_sub, "bright_cyan")),
-        )
-
-        net_str = f"{h_metrics.network_total:,} IOCs"
-        net_sub = f"{h_metrics.network_ips} IP, {h_metrics.network_domains} dom"
-        if h_metrics.network_urls and not narrow:
-            net_sub += f", {h_metrics.network_urls} url"
-        table.add_row(
-            "NETWORK",
-            Text.assemble((net_str, "bright_white"), (" · ", "dim"), (net_sub, "bright_cyan")),
-        )
-
-        host_str = f"{h_metrics.host_total:,} IOCs"
-        host_sub = f"{h_metrics.host_hashes} hash, {h_metrics.host_paths} path"
-        table.add_row(
-            "ENDPOINT",
-            Text.assemble((host_str, "bright_white"), (" · ", "dim"), (host_sub, "bright_cyan")),
-        )
-
-        if not compact and (h_metrics.fingerprints_count > 0 or h_metrics.cloud_ops_count > 0):
-            infra_str = f"{h_metrics.fingerprints_count} JA4/JARM" if h_metrics.fingerprints_count else "JA4 standby"
-            cloud_sub = f"{h_metrics.cloud_ops_count} cloud/k8s" if h_metrics.cloud_ops_count else "cloud ready"
-            table.add_row(
-                "INFRA/CLOUD",
-                Text.assemble((infra_str, "bright_white"), (" · ", "dim"), (cloud_sub, "bright_cyan")),
-            )
-
-        if not compact:
-            unsupp_style = "bold bright_red" if h_metrics.grounding_unsupported > 0 else "dim"
-            table.add_row(
-                "FIDELITY",
-                Text.assemble(
-                    (f"{h_metrics.grounding_asserted} asrt", "bright_green"),
-                    (" · ", "dim"),
-                    (f"{h_metrics.grounding_derived} drv", "bright_cyan"),
-                    (" · ", "dim"),
-                    (f"{h_metrics.grounding_unsupported} unsupp", unsupp_style),
-                ),
-            )
-
-    return Panel(
-        table,
-        title="[bold bright_cyan]HUNTS[/]",
-        border_style="bright_magenta",
-        box=box.ROUNDED,
-    )
-
-
-def _hunts_summary_panel(
-    workspace: Optional[Path] = None,
-    narrow: bool = True,
-    compact: bool = False,
-    metrics: Optional[HuntsMetrics] = None,
-) -> Panel:
-    return _hunts_panel(workspace=workspace, narrow=narrow, compact=compact, metrics=metrics)
-
-
-def _mitre_metrics_panel(
-    workspace: Optional[Path] = None,
-    narrow: bool = False,
-    compact: bool = False,
-    metrics: Optional[HuntsMetrics] = None,
-    detailed: bool = False,
-    col_width: Optional[int] = None,
-) -> Panel:
-    """A dedicated panel displaying MITRE ATT&CK Enterprise, Cloud, and Container coverage metrics."""
-    h_metrics = metrics or _collect_hunts_metrics(workspace)
-
-    table = Table(box=None, show_header=False, expand=True, padding=(0, 1))
-    table.add_column("label", style="dim", width=11, min_width=10, no_wrap=True)
-    table.add_column("value", ratio=1, overflow="ellipsis", no_wrap=True)
-
-    ent = h_metrics.enterprise_ttps or {}
-    cloud = h_metrics.cloud_ttps or {}
-    containers = h_metrics.containers_ttps or {}
-
-    ent_total = h_metrics.enterprise_total or sum(ent.values())
-    cloud_total = h_metrics.cloud_total or sum(cloud.values())
-    container_total = h_metrics.containers_total or sum(containers.values())
-
-    cloud_tactics = sum(v > 0 for v in cloud.values())
-    container_tactics = sum(v > 0 for v in containers.values())
-
-    recon = ent.get("reconnaissance", 0)
-    resdev = ent.get("resource-development", 0)
-    initacc = ent.get("initial-access", 0)
-    exec_cnt = ent.get("execution", 0)
-    persist = ent.get("persistence", 0)
-    privesc = ent.get("privilege-escalation", 0)
-    stealth = ent.get("stealth", 0)
-    defimp = ent.get("defense-impairment", 0)
-    credacc = ent.get("credential-access", 0)
-    disc = ent.get("discovery", 0)
-    latmove = ent.get("lateral-movement", 0)
-    collect = ent.get("collection", 0)
-    c2 = ent.get("command-and-control", 0)
-    exfil = ent.get("exfiltration", 0)
-    impact = ent.get("impact", 0)
-
-    active_tactics = sum(1 for v in ent.values() if v > 0)
-
-    if detailed:
-        table = Table(box=None, show_header=False, expand=True, padding=(0, 0))
-        table.add_column("tactic", ratio=1, min_width=20, no_wrap=True, overflow="ellipsis")
-        metric_w = col_width if col_width is not None else 6
-        for name in ("TTPs", "IOCs", "Hunts", "Rules"):
-            table.add_column(name, width=metric_w, justify="right", no_wrap=True)
-        table.add_row(
-            Text(f"ENTERPRISE ({active_tactics} / 15 tactics) ({ent_total} Unique TTPs)", style="bold bright_cyan"),
-            *(Text(label, style="bold bright_cyan") for label in ("TTPs", "IOCs", "Hunts", "Rules")),
-        )
-        for tactic, label in (
-            ("reconnaissance", "Reconnaissance"),
-            ("resource-development", "Resource Development"),
-            ("initial-access", "Initial Access"),
-            ("execution", "Execution"),
-            ("persistence", "Persistence"),
-            ("privilege-escalation", "Privilege Escalation"),
-            ("stealth", "Stealth"),
-            ("defense-impairment", "Defense Impairment"),
-            ("credential-access", "Credential Access"),
-            ("discovery", "Discovery"),
-            ("lateral-movement", "Lateral Movement"),
-            ("collection", "Collection"),
-            ("command-and-control", "Command and Control"),
-            ("exfiltration", "Exfiltration"),
-            ("impact", "Impact"),
-        ):
-            count = ent.get(tactic, 0)
-            iocs = h_metrics.tactic_iocs.get("enterprise", {}).get(tactic, 0)
-            hunts = h_metrics.tactic_hunts.get("enterprise", {}).get(tactic, 0)
-            rules = h_metrics.tactic_rules.get("enterprise", {}).get(tactic, 0)
-            table.add_row(
-                Text(label, style="dim"),
-                Text(str(count), style="bright_white" if count else "dim"),
-                Text(str(iocs), style="bright_cyan" if iocs else "dim"),
-                Text(str(hunts), style="bright_cyan" if hunts else "dim"),
-                Text(str(rules), style="bright_green" if rules else "dim"),
-            )
-        table.add_row(
-            Text(f"CLOUD ({cloud_tactics} / 12 tactics) ({cloud_total} Unique TTPs)", style="bright_cyan"),
-            Text(str(cloud_total), style="bright_cyan"),
-            Text(str(h_metrics.matrix_iocs.get("cloud", 0)), style="bright_cyan"),
-            Text(str(h_metrics.matrix_hunts.get("cloud", 0)), style="bright_cyan"),
-            Text(str(h_metrics.matrix_rules.get("cloud", 0)), style="bright_cyan"),
-        )
-        table.add_row(
-            Text(f"CONTAINERS ({container_tactics} / 10 tactics) ({container_total} Unique TTPs)", style="bright_cyan"),
-            Text(str(container_total), style="bright_cyan"),
-            Text(str(h_metrics.matrix_iocs.get("containers", 0)), style="bright_cyan"),
-            Text(str(h_metrics.matrix_hunts.get("containers", 0)), style="bright_cyan"),
-            Text(str(h_metrics.matrix_rules.get("containers", 0)), style="bright_cyan"),
-        )
-    elif compact:
-        if ent_total == 0 and h_metrics.ttps_count == 0:
-            table.add_row("ENTERPRISE", Text("(0 / 15 tactics) (0 Unique TTPs)", style="dim"))
-            table.add_row(" Ingress", Text("Recon 0 · ResDev 0 · InitAcc 0", style="dim"))
-            table.add_row(" Execution", Text("Exec 0 · Persist 0 · PrivEsc 0", style="dim"))
-            table.add_row(" Defense", Text("Stealth 0 · DefImp 0 · CredAcc 0", style="dim"))
-            table.add_row(" Actions", Text("Disc 0 · C2 0 · Impact 0", style="dim"))
-            table.add_row("CLOUD & K8S", Text("(0/12) (0 TTPs) · (0/10) (0 TTPs)", style="dim"))
-        else:
-            table.add_row(
-                "ENTERPRISE",
-                Text(f"({active_tactics} / 15 tactics) ({ent_total} Unique TTPs)", style="bright_white"),
-            )
-            table.add_row(
-                " Ingress",
-                Text.assemble(
-                    ("Recon ", "dim"),
-                    (str(recon), "bright_white"),
-                    (" · ", "dim"),
-                    ("ResDev ", "dim"),
-                    (str(resdev), "bright_white"),
-                    (" · ", "dim"),
-                    ("InitAcc ", "dim"),
-                    (str(initacc), "bright_white"),
-                ),
-            )
-            table.add_row(
-                " Execution",
-                Text.assemble(
-                    ("Exec ", "dim"),
-                    (str(exec_cnt), "bright_white"),
-                    (" · ", "dim"),
-                    ("Persist ", "dim"),
-                    (str(persist), "bright_white"),
-                    (" · ", "dim"),
-                    ("PrivEsc ", "dim"),
-                    (str(privesc), "bright_white"),
-                ),
-            )
-            table.add_row(
-                " Defense",
-                Text.assemble(
-                    ("Stealth ", "dim"),
-                    (str(stealth), "bright_white"),
-                    (" · ", "dim"),
-                    ("DefImp ", "dim"),
-                    (str(defimp), "bright_white"),
-                    (" · ", "dim"),
-                    ("CredAcc ", "dim"),
-                    (str(credacc), "bright_white"),
-                ),
-            )
-            table.add_row(
-                " Actions",
-                Text.assemble(
-                    ("Disc ", "dim"),
-                    (str(disc), "bright_white"),
-                    (" · ", "dim"),
-                    ("C2 ", "dim"),
-                    (str(c2), "bright_white"),
-                    (" · ", "dim"),
-                    ("Impact ", "dim"),
-                    (str(impact), "bright_white"),
-                ),
-            )
-            cloud_str = f"Cloud ({cloud_tactics}/12) ({cloud_total} Unique TTPs)"
-            k8s_str = f"K8s ({container_tactics}/10) ({container_total} Unique TTPs)"
-            table.add_row(
-                "CLOUD & K8S",
-                Text.assemble(
-                    (cloud_str, "bright_cyan" if cloud_total else "dim"),
-                    (" · ", "dim"),
-                    (k8s_str, "bright_cyan" if container_total else "dim"),
-                ),
-            )
-    else:
-        if ent_total == 0 and h_metrics.ttps_count == 0:
-            table.add_row("ENTERPRISE", Text("(0 / 15 tactics) (0 Unique TTPs)", style="dim"))
-            table.add_row(" Pre-Attack", Text("Recon 0 · ResDev 0", style="dim"))
-            table.add_row(" Initial", Text("InitAcc 0 · Exec 0", style="dim"))
-            table.add_row(" Persist", Text("Persist 0 · PrivEsc 0", style="dim"))
-            table.add_row(" Defense", Text("Stealth 0 · DefImp 0", style="dim"))
-            table.add_row(" Discovery", Text("Disc 0 · CredAcc 0", style="dim"))
-            table.add_row(" Movement", Text("LatMove 0 · Collect 0", style="dim"))
-            table.add_row(" Actions", Text("C2 0 · Exfil 0 · Impact 0", style="dim"))
-            table.add_row("CLOUD", Text("(0 / 12 tactics) (0 Unique TTPs)", style="dim"))
-            table.add_row("CONTAINERS", Text("(0 / 10 tactics) (0 Unique TTPs)", style="dim"))
-        else:
-            table.add_row(
-                "ENTERPRISE",
-                Text(f"({active_tactics} / 15 tactics) ({ent_total} Unique TTPs)", style="bright_white"),
-            )
-            table.add_row(
-                " Pre-Attack",
-                Text.assemble(
-                    ("Recon ", "dim"),
-                    (str(recon), "bright_white"),
-                    (" · ", "dim"),
-                    ("ResDev ", "dim"),
-                    (str(resdev), "bright_white"),
-                ),
-            )
-            table.add_row(
-                " Initial",
-                Text.assemble(
-                    ("InitAcc ", "dim"),
-                    (str(initacc), "bright_white"),
-                    (" · ", "dim"),
-                    ("Exec ", "dim"),
-                    (str(exec_cnt), "bright_white"),
-                ),
-            )
-            table.add_row(
-                " Persist",
-                Text.assemble(
-                    ("Persist ", "dim"),
-                    (str(persist), "bright_white"),
-                    (" · ", "dim"),
-                    ("PrivEsc ", "dim"),
-                    (str(privesc), "bright_white"),
-                ),
-            )
-            table.add_row(
-                " Defense",
-                Text.assemble(
-                    ("Stealth ", "dim"),
-                    (str(stealth), "bright_white"),
-                    (" · ", "dim"),
-                    ("DefImp ", "dim"),
-                    (str(defimp), "bright_white"),
-                ),
-            )
-            table.add_row(
-                " Discovery",
-                Text.assemble(
-                    ("Disc ", "dim"),
-                    (str(disc), "bright_white"),
-                    (" · ", "dim"),
-                    ("CredAcc ", "dim"),
-                    (str(credacc), "bright_white"),
-                ),
-            )
-            table.add_row(
-                " Movement",
-                Text.assemble(
-                    ("LatMove ", "dim"),
-                    (str(latmove), "bright_white"),
-                    (" · ", "dim"),
-                    ("Collect ", "dim"),
-                    (str(collect), "bright_white"),
-                ),
-            )
-            table.add_row(
-                " Actions",
-                Text.assemble(
-                    ("C2 ", "dim"),
-                    (str(c2), "bright_white"),
-                    (" · ", "dim"),
-                    ("Exfil ", "dim"),
-                    (str(exfil), "bright_white"),
-                    (" · ", "dim"),
-                    ("Impact ", "dim"),
-                    (str(impact), "bright_white"),
-                ),
-            )
-
-            table.add_row(
-                "CLOUD",
-                Text(
-                    f"({cloud_tactics} / 12 tactics) ({cloud_total} Unique TTPs)",
-                    style="bright_cyan" if cloud_total else "dim",
-                ),
-            )
-
-            table.add_row(
-                "CONTAINERS",
-                Text(
-                    f"({container_tactics} / 10 tactics) ({container_total} Unique TTPs)",
-                    style="bright_cyan" if container_total else "dim",
-                ),
-            )
-
-    return Panel(
-        table,
-        title="[bold bright_cyan]MITRE[/]",
-        subtitle=None,
-        border_style="bright_magenta",
-        box=box.ROUNDED,
-    )
-
-
-def _detections_panel(
-    workspace: Optional[Path] = None,
-    metrics: Optional[HuntsMetrics] = None,
-    runner: Optional[RunnerStatus] = None,
-    events: Optional[List[TrailEvent]] = None,
-    purple_metrics: Optional[PurpleTeamMetrics] = None,
-    siem_metrics: Optional[SiemDriftMetrics] = None,
-    narrow: bool = False,
-    compact: bool = False,
-) -> Panel:
-    """A combined panel displaying Sigma detection rules, SIEM query targets, rule tests, self-tuning, and BAS simulation."""
-    h_metrics = metrics or _collect_hunts_metrics(workspace)
-    p_metrics = purple_metrics or _collect_purple_team_metrics(workspace, events)
-    siem_m = siem_metrics or _collect_siem_drift_metrics(workspace)
-    q_prov = runner.query_provider if runner and runner.query_provider else "mock"
-    pending = runner.pending_queries if runner else None
-
-    table = Table(box=None, show_header=False, expand=True, padding=(0, 1))
-    table.add_column("label", style="dim", width=11, min_width=10, no_wrap=True)
-    table.add_column("value", ratio=1, overflow="ellipsis", no_wrap=True)
-
-    rules_cnt = h_metrics.sigma_rules_count
-    rules_str = f"{rules_cnt:,} rules" if rules_cnt else "0 rules drafted"
-    table.add_row("RULES", Text(rules_str, style="bright_white"))
-
-    pending_str = f"{pending} pending" if pending else "0 pending"
-    pending_style = "bold bright_yellow" if pending else "bright_white"
-    table.add_row(
-        "SIEM QUERY",
-        Text.assemble(
-            (f"{q_prov.upper()} backend", "bright_white"),
-            (" · ", "dim"),
-            (pending_str, pending_style),
-        ),
-    )
-
-    if siem_m.total_queries > 0:
-        if siem_m.drifted_count > 0:
-            sync_style = "bold bright_red"
-            sync_sub = f"{siem_m.drifted_count} drifted"
-        elif siem_m.missing_count > 0 or siem_m.error_count > 0:
-            sync_style = "bold bright_yellow"
-            sync_sub = f"{siem_m.missing_count} missing"
-        else:
-            sync_style = "bright_green"
-            sync_sub = "100% in sync"
-        table.add_row(
-            "SIEM SYNC",
-            Text.assemble(
-                (f"{siem_m.in_sync_count}/{siem_m.total_queries} queries", "bright_white"),
-                (" · ", "dim"),
-                (sync_sub, sync_style),
-            ),
-        )
-
-    active_val = p_metrics.validated_rules > 0 or p_metrics.bas_runs > 0
-    test_sub = f"{p_metrics.hunts_validated} hunts"
-    table.add_row(
-        "RULE TESTS",
-        Text.assemble(
-            (f"{p_metrics.validated_rules} rules tested", "bright_white" if active_val else "dim"),
-            (" · ", "dim"),
-            (test_sub, "bright_cyan" if active_val else "dim"),
-        ),
-    )
-
-    if not compact and p_metrics.validated_rules > 0:
-        table.add_row(
-            "PRECISION",
-            Text.assemble(
-                (f"{p_metrics.precision_rate:.0%} rule precision", "bright_green"),
-                (" · ", "dim"),
-                (f"{p_metrics.false_positive_count} FP", "bright_white"),
-            ),
-        )
-
-    table.add_row(
-        "SELF-TUNING",
-        Text.assemble(
-            (f"{p_metrics.tuned_rules} tuned", "bright_cyan" if active_val else "dim"),
-            (" · ", "dim"),
-            (f"{p_metrics.false_positive_count} FP", "bright_white" if active_val else "dim"),
-        ),
-    )
-
-    bas_runs = p_metrics.bas_runs
-    bas_sub = f"{p_metrics.bas_verified} verified · {p_metrics.bas_detection_misses} missed"
-    table.add_row(
-        "BREACH SIM",
-        Text.assemble(
-            (f"{bas_runs} runs", "bright_white" if bas_runs else "dim"),
-            (" · ", "dim"),
-            (bas_sub if bas_runs else "standby", "bright_cyan" if bas_runs else "dim"),
-        ),
-    )
-
-    if not compact and (p_metrics.bas_telemetry_missing or p_metrics.bas_failures):
-        gap_style = "bright_red"
-        table.add_row(
-            "BAS GAPS",
-            Text(f"{p_metrics.bas_telemetry_missing} sensor gaps · {p_metrics.bas_failures} failed", style=gap_style),
-        )
-
-    return Panel(
-        table,
-        title="[bold bright_cyan]DETECTIONS[/]",
-        border_style="bright_magenta",
-        box=box.ROUNDED,
-    )
-
-
-def _purple_team_panel(
-    workspace: Optional[Path] = None,
-    events: Optional[List[TrailEvent]] = None,
-    narrow: bool = True,
-    compact: bool = False,
-    metrics: Optional[PurpleTeamMetrics] = None,
-) -> Panel:
-    """Show rule replay and breach-and-attack simulation in one validation panel."""
-    measured = metrics or _collect_purple_team_metrics(workspace, events)
-    table = Table(box=None, show_header=False, expand=True, padding=(0, 1))
-    table.add_column("label", style="dim", width=11, min_width=11, no_wrap=True)
-    table.add_column("value", ratio=1, overflow="ellipsis", no_wrap=True)
-    active = measured.validated_rules > 0 or measured.bas_runs > 0
-    table.add_row("STATUS", Text("ACTIVE" if active else "STANDBY", style="bold bright_green" if active else "dim"))
-    rules = f"{measured.validated_rules} rules" if compact else f"{measured.validated_rules} rules tested"
-    table.add_row("RULE TESTS", Text(f"{rules} · {measured.hunts_validated} hunts", style="bright_white" if active else "dim"))
-    tuned = f"{measured.tuned_rules} tuned" if compact else f"{measured.tuned_rules} logic re-tuned"
-    table.add_row("SELF-TUNING", Text(f"{tuned} · {measured.false_positive_count} FP", style="bright_cyan" if active else "dim"))
-    if not compact:
-        precision = f"{measured.precision_rate:.0%} precision" if measured.validated_rules else "awaiting rule results"
-        table.add_row("PRECISION", Text(precision, style="bright_green" if measured.validated_rules else "dim"))
-    if measured.bas_mode_label:
-        table.add_row("BAS MODE", Text(measured.bas_mode_label, style="bright_cyan"))
-    if measured.bas_scope_label:
-        table.add_row("BAS SCOPE", Text(measured.bas_scope_label, style="dim"))
-        table.add_row("BAS CHECKS", Text(f"{measured.bas_runs - measured.bas_control_runs} hunt checks · {measured.bas_control_runs} sensor controls", style="dim"))
-    table.add_row(
-        "BREACH SIM",
-        Text(f"{measured.bas_runs} runs · {measured.bas_live_runs} live, {measured.bas_mock_runs} mock", style="bright_white" if measured.bas_runs else "dim"),
-    )
-    table.add_row(
-        "ATTACKS",
-        Text(f"{measured.bas_techniques} techniques · {measured.bas_detections} " + ("rule matches" if measured.bas_scope_label else "detections"), style="bright_cyan" if measured.bas_runs else "dim"),
-    )
-    table.add_row(
-        "BAS RESULTS",
-        Text(f"{measured.bas_verified} verified · {measured.bas_detection_misses} missed", style="bright_white" if measured.bas_runs else "dim"),
-    )
-    if measured.bas_simulation_matches or measured.bas_query_matches or measured.bas_smoke_matches:
-        table.add_row(
-            "OTHER MATCHES",
-            Text(f"{measured.bas_simulation_matches} synthetic · {measured.bas_query_matches} query · {measured.bas_smoke_matches} smoke", style="bright_yellow"),
-        )
-    if measured.bas_last_detection_latency_sec > 0.0 or measured.bas_siem_verified > 0:
-        table.add_row(
-            "SIEM ALERTS",
-            Text(f"{measured.bas_siem_verified} live fired · {measured.bas_last_detection_latency_sec:.3f}s latency", style="bright_green"),
-        )
-    if not compact:
-        gap_style = "bright_red" if measured.bas_telemetry_missing or measured.bas_failures else "dim"
-        table.add_row("BAS GAPS", Text(f"{measured.bas_telemetry_missing} sensor gaps · {measured.bas_failures} failed", style=gap_style))
-        table.add_row(
-            "BAS SENSORS",
-            Text(f"{measured.bas_telemetry_runs}/{measured.bas_runs} observed · {measured.bas_matched_events} events", style="bright_white" if measured.bas_runs else "dim"),
-        )
-        if measured.bas_skipped:
-            table.add_row("BAS SKIPPED", Text(f"{measured.bas_skipped} · {measured.bas_last_skip_reason}", style="dim"))
-    if not compact and not narrow:
-        table.add_row("REPLAY DATA", Text(f"{measured.total_telemetry_events:,} telemetry events", style="dim"))
-        if measured.last_duration_sec:
-            table.add_row("LAST REPLAY", Text(f"{measured.last_validated_count} in {measured.last_duration_sec:.1f}s", style="bright_cyan"))
-        providers = " · ".join(f"{name.upper()} {count}" for name, count in sorted(measured.bas_providers.items()))
-        table.add_row("BAS ENGINES", Text(providers or "no simulations yet", style="dim"))
-        if measured.bas_last_status:
-            last = measured.bas_last_status.replace("_", " ")
-            if measured.bas_last_duration_sec:
-                last += f" · {measured.bas_last_duration_sec:.1f}s"
-            table.add_row("LAST BAS", Text(last, style="bright_cyan"))
-    return Panel(table, title="[bold bright_cyan]VALIDATION[/]", border_style="magenta", box=box.ROUNDED)
-
-
-def _detection_rules_panel(
-    workspace: Optional[Path] = None,
-    metrics: Optional[HuntsMetrics] = None,
-    runner: Optional[RunnerStatus] = None,
-    narrow: bool = False,
-    siem_metrics: Optional[SiemDriftMetrics] = None,
-) -> Panel:
-    return _detections_panel(workspace=workspace, metrics=metrics, runner=runner, narrow=narrow, siem_metrics=siem_metrics)
-
-
-def _threat_observables_panel(
-    workspace: Optional[Path] = None,
-    metrics: Optional[HuntsMetrics] = None,
-    narrow: bool = False,
-) -> Panel:
-    return _hunts_panel(workspace=workspace, metrics=metrics, narrow=narrow)
-
-
-def _collect_outbound_metrics(workspace: Optional[Path] = None, runner: Optional[RunnerStatus] = None) -> Dict[str, Any]:
-    res: Dict[str, Any] = {
-        "github_published": 0,
-        "github_pending": 0,
-        "github_failed": 0,
-        "github_latest_hunt": None,
-        "github_latest_pr": None,
-        "misp_confirmed": 0,
-        "misp_pending": 0,
-        "misp_failed": 0,
-        "misp_latest_hunt": None,
-        "misp_target": None,
-    }
-    if runner:
-        res["github_published"] = runner.github_confirmed_promotions or 0
-        res["github_pending"] = runner.github_pending_prs or 0
-        res["misp_confirmed"] = runner.misp_confirmed_exports or 0
-        res["misp_pending"] = runner.misp_pending_exports or 0
-
-    if workspace:
-        db_path = workspace / ".hecate" / "publisher" / "promotion-outbox.sqlite3"
-        if not db_path.exists():
-            db_path = workspace / ".hecate" / "github" / "outbox.sqlite3"
-        if db_path.exists():
-            try:
-                conn = connect_sqlite_ro(db_path, timeout=1.0)
-                conn.row_factory = sqlite3.Row
-                try:
-                    rows = conn.execute("SELECT status, hunt_id, pr_number FROM promotions").fetchall()
-                    pub = sum(1 for r in rows if str(r["status"]).lower() in ("published", "merged"))
-                    pend = sum(1 for r in rows if str(r["status"]).lower() in ("queued", "publishing", "pending"))
-                    fail = sum(1 for r in rows if str(r["status"]).lower() in ("retry", "failed"))
-                    res["github_published"] = max(res["github_published"], pub)
-                    res["github_pending"] = max(res["github_pending"], pend)
-                    res["github_failed"] = fail
-                    if rows:
-                        res["github_latest_hunt"] = rows[-1]["hunt_id"]
-                        if rows[-1]["pr_number"]:
-                            res["github_latest_pr"] = f"PR #{rows[-1]['pr_number']}"
-                finally:
-                    conn.close()
-            except sqlite3.Error as exc:
-                logger.debug("Failed querying GitHub outbox in monitor: %s", exc)
-
-        misp_db = workspace / ".hecate" / "misp" / "outbox.sqlite3"
-        if misp_db.exists():
-            try:
-                conn = connect_sqlite_ro(misp_db, timeout=1.0)
-                conn.row_factory = sqlite3.Row
-                try:
-                    rows = conn.execute("SELECT status, hunt_id, event_id, target FROM exports").fetchall()
-                    conf = sum(1 for r in rows if str(r["status"]).lower() == "confirmed")
-                    pend = sum(1 for r in rows if str(r["status"]).lower() in ("queued", "publishing", "pending"))
-                    fail = sum(1 for r in rows if str(r["status"]).lower() in ("retry", "failed"))
-                    res["misp_confirmed"] = max(res["misp_confirmed"], conf)
-                    res["misp_pending"] = max(res["misp_pending"], pend)
-                    res["misp_failed"] = fail
-                    if rows:
-                        res["misp_latest_hunt"] = rows[-1]["hunt_id"]
-                        res["misp_target"] = rows[-1]["target"]
-                finally:
-                    conn.close()
-            except sqlite3.Error as exc:
-                logger.debug("Failed querying MISP outbox in monitor: %s", exc)
-
-    return res
-
-
-def _outbound_panel(
-    workspace: Optional[Path] = None,
-    runner: Optional[RunnerStatus] = None,
-    narrow: bool = False,
-    compact: bool = False,
-) -> Panel:
-    """A dedicated panel displaying summary metrics for outbound publication across GitHub and MISP."""
-    ob = _collect_outbound_metrics(workspace, runner)
-
-    table = Table(box=None, show_header=False, expand=True, padding=(0, 1))
-    table.add_column("label", style="dim", width=11, min_width=10, no_wrap=True)
-    table.add_column("value", ratio=1, overflow="ellipsis", no_wrap=True)
-
-    gh_pub = ob["github_published"]
-    gh_pend = ob["github_pending"]
-    gh_style = "bright_green" if gh_pub > 0 else "dim"
-    gh_parts = [(f"{gh_pub} published", gh_style)]
-    if gh_pend > 0:
-        gh_parts.extend([(" · ", "dim"), (f"{gh_pend} PR pending", "bold bright_yellow")])
-    elif ob["github_latest_hunt"]:
-        gh_parts.extend([(" · ", "dim"), (f"last: {ob['github_latest_hunt']}", "bright_cyan")])
-    else:
-        gh_parts.extend([(" · ", "dim"), ("0 pending", "dim")])
-    table.add_row("GITHUB", Text.assemble(*gh_parts))
-
-    misp_conf = ob["misp_confirmed"]
-    misp_pend = ob["misp_pending"]
-    misp_style = "bright_green" if misp_conf > 0 else "dim"
-    misp_parts = [(f"{misp_conf} confirmed", misp_style)]
-    if misp_pend > 0:
-        misp_parts.extend([(" · ", "dim"), (f"{misp_pend} pending", "bold bright_yellow")])
-    elif ob["misp_latest_hunt"]:
-        misp_parts.extend([(" · ", "dim"), (f"last: {ob['misp_latest_hunt']}", "bright_cyan")])
-    else:
-        misp_parts.extend([(" · ", "dim"), ("0 pending", "dim")])
-    table.add_row("MISP", Text.assemble(*misp_parts))
-
-    total_pend = gh_pend + misp_pend
-    if total_pend > 0:
-        sync_txt = f"{total_pend} outbound queued"
-        sync_style = "bold bright_yellow"
-    elif gh_pub > 0 or misp_conf > 0:
-        sync_txt = "all destinations synced"
-        sync_style = "bold bright_green"
-    else:
-        sync_txt = "standby · ready"
-        sync_style = "dim"
-    table.add_row("STATUS", Text(sync_txt, style=sync_style))
-
-    return Panel(
-        table,
-        title="[bold bright_cyan]OUTBOUND[/]",
-        border_style="bright_magenta",
-        box=box.ROUNDED,
-    )
-
-
 def _compact_progress(current: Optional[TrailEvent], active: bool, stale: bool, in_progress: Optional[int] = None) -> Panel:
     current_order = in_progress if in_progress is not None else (_stage_order(current.stage) if current else -1)
     labels = ("IN", "SRC", "RES", "HYP", "TEC", "SCOPE", "WRITE", "SIGMA", "REVIEW")
@@ -1617,324 +976,6 @@ def _tab_nav_bar(active_tab: int = 1, errors_only: bool = False, paused: bool = 
     return bar
 
 
-def _hunts_table(workspace: Path, metrics: HuntsMetrics) -> Panel:
-    table = Table(box=box.SIMPLE, expand=True, show_header=True, header_style="bold bright_cyan", padding=(0, 1))
-    table.add_column("HUNT ID", width=10, style="bright_cyan")
-    table.add_column("STATUS", width=12)
-    table.add_column("TITLE", ratio=1, overflow="ellipsis", no_wrap=True)
-    table.add_column("TACTICS", width=18, style="dim")
-    table.add_column("TECHNIQUES", width=16, style="dim")
-
-    hunts_dir = workspace / "hunts"
-    if not hunts_dir.exists():
-        for candidate in [
-            workspace.parent / "Hecate-Workspace" / "hunts",
-            workspace.parent / "Hecate-Public" / "hunts",
-        ]:
-            if candidate.exists():
-                hunts_dir = candidate
-                break
-
-    hunt_files = []
-    if hunts_dir.exists():
-        try:
-            hunt_files = sorted(hunts_dir.rglob("H-*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
-        except OSError:
-            hunt_files = []
-
-    status_styles = {
-        "promoted": "bold bright_green",
-        "published": "bold bright_green",
-        "completed": "bright_green",
-        "active": "bright_cyan",
-        "in_progress": "bright_cyan",
-        "in_review": "bold bright_yellow",
-        "planning": "dim bright_yellow",
-        "draft": "dim yellow",
-    }
-
-    count = 0
-    for hf in hunt_files[:15]:
-        try:
-            content = hf.read_text(encoding="utf-8", errors="ignore")
-            title = hf.stem
-            status = "planning"
-            tactics = []
-            techniques = []
-            if content.startswith("---"):
-                parts = content.split("---", 2)
-                if len(parts) >= 3:
-                    fm = yaml.safe_load(parts[1])
-                    if isinstance(fm, dict):
-                        title = str(fm.get("title") or title)
-                        if title.startswith("DRAFT - "):
-                            title = title[8:].strip()
-                        status = str(fm.get("status") or "planning").lower()
-                        tactics = [str(t).title() for t in (fm.get("tactics") or [])]
-                        techniques = [str(t).upper() for t in (fm.get("techniques") or [])]
-            style = status_styles.get(status, "bright_white")
-            table.add_row(
-                hf.stem,
-                Text(status.upper(), style=style),
-                title,
-                ", ".join(tactics[:2]) if tactics else "--",
-                ", ".join(techniques[:2]) if techniques else "--",
-            )
-            count += 1
-        except Exception:
-            continue
-
-    if count == 0:
-        table.add_row("--", "--", "No hunt drafts found in workspace", "--", "--")
-
-    return Panel(
-        table,
-        title=f"[bold bright_cyan]ACTIVE & RECENT HUNTS ({metrics.total_hunts} total)[/]",
-        border_style="bright_magenta",
-        box=box.ROUNDED,
-    )
-
-
-def _cti_feeds_panel(workspace: Path, events: List[TrailEvent]) -> Panel:
-    table = Table(box=box.SIMPLE, expand=True, show_header=True, header_style="bold bright_cyan", padding=(0, 1))
-    table.add_column("FEED SOURCE", width=16, style="bright_cyan")
-    table.add_column("CATEGORY", width=18, style="dim")
-    table.add_column("LAST INTAKE", width=12, style="dim")
-    table.add_column("ACTIVITY TODAY", ratio=1, overflow="ellipsis", no_wrap=True)
-    table.add_column("STATUS", width=10)
-
-    feeds = [
-        ("cisa_kev", "CISA KEV", "Exploited Vulns"),
-        ("otx", "Abuse.ch OTX", "Threat Pulses"),
-        ("threatfox", "ThreatFox", "Threat Indicators"),
-        ("malwarebazaar", "MalwareBazaar", "Malware Hashes"),
-        ("shadowserver", "Shadowserver", "C2 Infrastructure"),
-        ("misp", "MISP Inbound", "Community Events"),
-        ("cisa_advisories", "CISA Advisories", "Alerts & ICS"),
-        ("github_poc", "GitHub PoC", "Exploit Advisories"),
-        ("rss", "Threat RSS", "Security Blogs"),
-        ("certstream", "CertStream", "Live TLS Stream"),
-    ]
-
-    for key, name, category in feeds:
-        last_time = "--"
-        activity = "Standby"
-        status = "STANDBY"
-        status_style = "dim"
-
-        for e in reversed(events):
-            if key in e.message.lower() or (e.stage == "intake" and key in e.message.lower()):
-                last_time = e.timestamp[-8:]
-                status = "ACTIVE"
-                status_style = "bold bright_green"
-                activity = e.message[:55]
-                break
-
-        table.add_row(name, category, last_time, activity, Text(status, style=status_style))
-
-    return Panel(
-        table,
-        title="[bold bright_cyan]INBOUND CTI FEEDS & POLLER STATUS[/]",
-        border_style="bright_magenta",
-        box=box.ROUNDED,
-    )
-
-
-def _ingestion_funnel_panel(events: List[TrailEvent], runner: RunnerStatus) -> Panel:
-    table = Table(box=box.SIMPLE, expand=True, show_header=True, header_style="bold bright_cyan", padding=(0, 1))
-    table.add_column("PIPELINE FUNNEL STAGE", width=24, style="bright_cyan")
-    table.add_column("COUNT", width=8, justify="right", style="bold bright_white")
-    table.add_column("PROGRESS / CONVERSION", ratio=1)
-
-    intake_count = sum(1 for e in events if e.stage == "intake" or "intake:" in e.message)
-    triage_count = sum(1 for e in events if e.stage == "triage" and "pass" in e.message)
-    hypothesis_count = sum(1 for e in events if e.stage == "hypothesis" or "hypothesis:" in e.message)
-    draft_count = runner.drafts_today or sum(1 for e in events if "draft_created" in e.message or "draft_written" in e.message)
-    promoted_count = runner.github_confirmed_promotions
-
-    base = max(intake_count, 1)
-    stages = [
-        ("1. Raw CTI Ingested", intake_count, 100.0 if intake_count else 0.0),
-        ("2. Triage Validated", triage_count, (triage_count / base * 100.0)),
-        ("3. Hypotheses Formed", hypothesis_count, (hypothesis_count / base * 100.0)),
-        ("4. Drafts Created", draft_count, (draft_count / base * 100.0)),
-        ("5. Hunts Published", promoted_count, (promoted_count / base * 100.0)),
-    ]
-
-    for label, cnt, pct in stages:
-        bar = _bar(pct, width=16).plain
-        table.add_row(label, str(cnt), f"[{bar}] {pct:.1f}%")
-
-    if runner.parked_reasons:
-        p_str = ", ".join(f"{cnt} {k}" for k, cnt in sorted(runner.parked_reasons.items())[:3])
-        table.add_row("PARKED ITEMS QUEUE", str(runner.parked_items or 0), f"Reasons: {p_str}")
-
-    return Panel(
-        table,
-        title="[bold bright_cyan]CTI INGESTION FUNNEL & CONVERSION (TODAY)[/]",
-        border_style="bright_magenta",
-        box=box.ROUNDED,
-    )
-
-
-def _github_outbox_panel(workspace: Path) -> Panel:
-    table = Table(box=box.SIMPLE, expand=True, show_header=True, header_style="bold bright_cyan", padding=(0, 1))
-    table.add_column("ID", width=4, style="dim")
-    table.add_column("HUNT", width=8, style="bright_cyan")
-    table.add_column("STATUS", width=11)
-    table.add_column("PR / BRANCH", ratio=1, overflow="ellipsis", no_wrap=True)
-    table.add_column("UPDATED", width=9, style="dim")
-
-    db_path = workspace / ".hecate" / "publisher" / "promotion-outbox.sqlite3"
-    if not db_path.exists():
-        db_path = workspace / ".hecate" / "github" / "outbox.sqlite3"
-
-    rows = []
-    if db_path.exists():
-        try:
-            conn = connect_sqlite_ro(db_path, timeout=2.0)
-            conn.row_factory = sqlite3.Row
-            try:
-                rows = conn.execute("SELECT * FROM promotions ORDER BY id DESC LIMIT 8").fetchall()
-            finally:
-                conn.close()
-        except sqlite3.Error as exc:
-            logger.debug("Failed querying GitHub promotions outbox in monitor: %s", exc)
-
-    for r in rows:
-        st = str(r["status"]).lower()
-        if st in ("published", "merged"):
-            st_style = "bold bright_green"
-        elif st in ("queued", "publishing"):
-            st_style = "bold bright_yellow"
-        elif st == "retry":
-            st_style = "bold red"
-        else:
-            st_style = "bright_white"
-
-        pr = f"PR #{r['pr_number']}" if r["pr_number"] else str(r["branch"] or "--")
-        upd = str(r["updated_at"] or "")[-14:-6] if r["updated_at"] else "--"
-        table.add_row(str(r["id"]), str(r["hunt_id"]), Text(st.upper(), style=st_style), pr, upd)
-
-    if not rows:
-        table.add_row("--", "--", "EMPTY", "No promotions in GitHub outbox", "--")
-
-    return Panel(
-        table,
-        title="[bold bright_cyan]GITHUB PROMOTION OUTBOX[/]",
-        border_style="bright_magenta",
-        box=box.ROUNDED,
-    )
-
-
-def _misp_outbox_panel(workspace: Path) -> Panel:
-    table = Table(box=box.SIMPLE, expand=True, show_header=True, header_style="bold bright_cyan", padding=(0, 1))
-    table.add_column("HUNT", width=8, style="bright_cyan")
-    table.add_column("EVENT ID", width=10, style="dim")
-    table.add_column("STATUS", width=11)
-    table.add_column("TARGET", ratio=1, overflow="ellipsis", no_wrap=True)
-    table.add_column("CONFIRMED", width=12, style="dim")
-
-    db_path = workspace / ".hecate" / "misp" / "outbox.sqlite3"
-    rows = []
-    if db_path.exists():
-        try:
-            conn = connect_sqlite_ro(db_path, timeout=2.0)
-            conn.row_factory = sqlite3.Row
-            try:
-                rows = conn.execute("SELECT * FROM exports ORDER BY next_attempt DESC LIMIT 8").fetchall()
-            finally:
-                conn.close()
-        except sqlite3.Error as exc:
-            logger.debug("Failed querying MISP exports outbox in monitor: %s", exc)
-
-    for r in rows:
-        st = str(r["status"]).lower()
-        st_style = "bold bright_green" if st == "confirmed" else "bold bright_yellow" if st in ("queued", "publishing") else "bold red"
-        conf = str(r["confirmed_at"] or "")[:10] if r["confirmed_at"] else "--"
-        table.add_row(
-            str(r["hunt_id"]),
-            str(r["event_id"] or "--"),
-            Text(st.upper(), style=st_style),
-            str(r["target"]),
-            conf,
-        )
-
-    if not rows:
-        table.add_row("--", "--", "EMPTY", "No exports in MISP outbox", "--")
-
-    return Panel(
-        table,
-        title="[bold bright_cyan]MISP EXPORT OUTBOX[/]",
-        border_style="bright_magenta",
-        box=box.ROUNDED,
-    )
-
-
-def _bas_status_panel(workspace: Path, events: List[TrailEvent], metrics: Any) -> Panel:
-    table = Table(box=box.SIMPLE, expand=True, show_header=False, padding=(0, 1))
-    table.add_column("KEY", width=20, style="dim")
-    table.add_column("VALUE", style="bright_white")
-
-    table.add_row("CONTROLLER ENGINE", Text("Caldera Controller (Non-Root)", style="bright_green"))
-    table.add_row("TARGET SENSOR", Text("Ubuntu Local Process Sensor + Sigma", style="bright_cyan"))
-    table.add_row("ATTACK AUTOMATION", Text(getattr(metrics, "bas_mode_label", "AUTO · approved Linux lab"), style="bright_white"))
-    table.add_row("VALIDATION SCOPE", Text(getattr(metrics, "bas_scope_label", "Local process sensor + Sigma"), style="bright_white"))
-
-    runs = getattr(metrics, "bas_runs", 0)
-    live_runs = getattr(metrics, "bas_live_runs", 0)
-    mock_runs = getattr(metrics, "bas_mock_runs", 0)
-    table.add_row("SIMULATION RUNS", f"{runs} runs ({live_runs} live, {mock_runs} mock)")
-
-    events_count = getattr(metrics, "bas_matched_events", 0)
-    table.add_row("SENSOR TELEMETRY", f"{events_count} events captured & correlated")
-
-    siem_latency = getattr(metrics, "bas_last_detection_latency_sec", 0.0)
-    siem_backend = getattr(metrics, "bas_last_siem_backend", "") or "SPLUNK"
-    if siem_latency > 0.0:
-        latency_str = f"{siem_latency:.3f}s ({siem_latency*1000:.0f} ms)"
-        avg_latency = getattr(metrics, "bas_avg_detection_latency_sec", 0.0)
-        if avg_latency > 0.0 and avg_latency != siem_latency:
-            latency_str += f" · avg {avg_latency:.3f}s"
-        table.add_row("LIVE SIEM ALERT", Text(f"{siem_backend.upper()} ALERT FIRED · VERIFIED", style="bold bright_green"))
-        table.add_row("DETECTION LATENCY", Text(f"{latency_str} (True Positive)", style="bold bright_cyan"))
-    else:
-        table.add_row("LIVE SIEM ALERT", Text("STANDBY · awaiting adversary detonation", style="dim"))
-        table.add_row("DETECTION LATENCY", Text("--", style="dim"))
-
-    return Panel(
-        table,
-        title="[bold bright_cyan]BAS CONTROLLER & SENSOR STATUS[/]",
-        border_style="bright_magenta",
-        box=box.ROUNDED,
-    )
-
-
-def _bas_events_panel(events: List[TrailEvent]) -> Panel:
-    table = Table(box=box.SIMPLE, expand=True, show_header=True, header_style="bold bright_cyan", padding=(0, 1))
-    table.add_column("TIME", width=9, style="dim")
-    table.add_column("STAGE", width=12)
-    table.add_column("VALIDATION ACTIVITY", ratio=1, overflow="ellipsis", no_wrap=True)
-
-    bas_events = [
-        e
-        for e in events
-        if any(k in e.message.lower() or k in e.stage.lower() for k in ("bas", "sensor", "caldera", "stratus", "validation", "telemetry", "replay"))
-    ]
-    for e in bas_events[-8:]:
-        table.add_row(e.timestamp[-8:], e.stage, e.message)
-
-    if not bas_events:
-        table.add_row("--:--:--", "standby", "No recent breach simulation events in log stream")
-
-    return Panel(
-        table,
-        title="[bold bright_cyan]RECENT SENSOR & BREACH SIMULATION LOGS[/]",
-        border_style="bright_magenta",
-        box=box.ROUNDED,
-    )
-
-
 def _runner_panel(status: RunnerStatus, events: List[TrailEvent]) -> Panel:
     service_state = status.service_state.upper()
     service_style = "bright_green" if service_state in {"ACTIVE", "ACTIVATING"} else "bright_cyan"
@@ -2103,271 +1144,6 @@ def _format_cycle_outcome(msg: str) -> str:
             return f"{outcome} in {dur} · {reason}"
         return f"{outcome} · {reason}"
     return clean
-
-
-def _siem_sync_panel(
-    workspace: Optional[Path] = None,
-    metrics: Optional[SiemDriftMetrics] = None,
-) -> Panel:
-    """SIEM Detection-as-Code sync health, audit sweeps, and platform targets."""
-    measured = metrics or _collect_siem_drift_metrics(workspace)
-    table = Table(box=None, show_header=False, expand=True, padding=(0, 1))
-    table.add_column("label", style="dim", width=14, min_width=14, no_wrap=True)
-    table.add_column("value", ratio=1, overflow="ellipsis", no_wrap=True)
-
-    if measured.drifted_count > 0:
-        st_text = Text(f"DRIFT DETECTED ({measured.drifted_count})", style="bold bright_red")
-    elif measured.pending_decommission_count > 0:
-        st_text = Text(f"DECOMMISSION PENDING ({measured.pending_decommission_count})", style="bold bright_yellow")
-    elif measured.missing_count > 0 or measured.error_count > 0:
-        st_text = Text("ATTENTION REQUIRED", style="bold bright_yellow")
-    elif measured.total_queries > 0:
-        st_text = Text("IN SYNC (100%)", style="bold bright_green")
-    else:
-        st_text = Text("STANDBY", style="dim")
-    table.add_row("STATUS", st_text)
-
-    active_queries = max(1, measured.total_queries - measured.decommissioned_count)
-    sync_val = (
-        f"{measured.in_sync_count} / {active_queries} active queries in sync ({measured.sync_pct:.1f}%)"
-        + (f" · {measured.decommissioned_count} decommissioned" if measured.decommissioned_count > 0 else "")
-        if measured.total_queries > 0
-        else "0 queries tracked"
-    )
-    table.add_row("SYNC RATIO", Text(sync_val, style="bright_white" if measured.total_queries else "dim"))
-
-    drift_style = "bold bright_red" if measured.drifted_count > 0 else "dim"
-    drift_elements: List[Tuple[str, str]] = [
-        (f"{measured.drifted_count} drifted", drift_style),
-        (" · ", "dim"),
-        (f"{measured.missing_count} missing", "bold bright_yellow" if measured.missing_count else "dim"),
-    ]
-    if measured.decommissioned_count > 0:
-        drift_elements.extend([
-            (" · ", "dim"),
-            (f"{measured.decommissioned_count} decommissioned", "bright_cyan"),
-        ])
-    if measured.pending_decommission_count > 0:
-        drift_elements.extend([
-            (" · ", "dim"),
-            (f"{measured.pending_decommission_count} pending decom", "bold bright_yellow"),
-        ])
-    drift_elements.extend([
-        (" · ", "dim"),
-        (f"{measured.error_count} errors", "bold bright_red" if measured.error_count else "dim"),
-    ])
-    table.add_row("DRIFT METRICS", Text.assemble(*drift_elements))
-
-    table.add_row(
-        "AUDIT SWEEPS",
-        Text(
-            f"{measured.sweeps_conducted} sweeps executed · {measured.reconciled_count} reconciled",
-            style="bright_white" if measured.sweeps_conducted else "dim",
-        ),
-    )
-
-    table.add_row(
-        "VERSIONS",
-        Text(f"{measured.tracked_versions} query version snapshots tracked", style="bright_cyan" if measured.tracked_versions else "dim"),
-    )
-
-    last_sweep = measured.last_audited[:19].replace("T", " ") + " UTC" if measured.last_audited else "never"
-    table.add_row("LAST AUDIT", Text(last_sweep, style="dim"))
-
-    if measured.last_detection_latency_sec > 0.0 or measured.bas_verified_alerts_count > 0:
-        hunt_txt = f" ({measured.last_verified_hunt} · {measured.last_verified_technique})" if measured.last_verified_hunt else ""
-        lat_txt = f"{measured.last_detection_latency_sec:.3f}s latency{hunt_txt}"
-        table.add_row(
-            "CLOSED-LOOP BAS",
-            Text(f"{measured.bas_verified_alerts_count} live alerts verified · {lat_txt}", style="bold bright_green"),
-        )
-    else:
-        table.add_row("CLOSED-LOOP BAS", Text("Standby · 0 live validations recorded", style="dim"))
-
-    if measured.active_targets:
-        targets_str = " · ".join(
-            f"{t.upper()} ({measured.target_breakdown.get(t, {}).get('in_sync', 0)}/{measured.target_breakdown.get(t, {}).get('total', 0)} in sync)"
-            for t in measured.active_targets
-        )
-        table.add_row("TARGETS", Text(targets_str, style="bright_cyan"))
-    else:
-        table.add_row("TARGETS", Text("Splunk REST API (Saved Searches) · Elastic Fleet / Rules API", style="dim"))
-
-    table.add_row("AUTHORITATIVE", Text("queries/H-*/ (Git HEAD repository authoritative source)", style="dim"))
-
-    return Panel(
-        table,
-        title="[bold bright_cyan]SIEM DETECTION-AS-CODE[/]",
-        border_style="bright_magenta",
-        box=box.ROUNDED,
-    )
-
-
-def _siem_drift_diff_panel(
-    events: Optional[List[Dict[str, Any]]] = None,
-) -> Panel:
-    """Inspect AST and syntax differences between local git and live SIEM queries."""
-    ev_list = events or []
-    diff_event: Optional[Dict[str, Any]] = None
-    for ev in ev_list:
-        if ev.get("drift_diff"):
-            diff_event = ev
-            break
-        if ev.get("event_type") == "drift_detected":
-            diff_event = ev
-            break
-
-    if not diff_event or not diff_event.get("drift_diff"):
-        text = Text()
-        text.append("\n  ✔  All deployed SIEM queries match git-authoritative AST\n\n", style="bold bright_green")
-        text.append("  • No active query drift detected across monitoring targets.\n", style="bright_white")
-        text.append("  • Live SIEM Saved Searches verify 1:1 against transpiled SPL/KQL.\n", style="dim")
-        text.append("  • Any remote console edits will trigger automated drift detection.\n", style="dim")
-        if ev_list:
-            latest = ev_list[0]
-            text.append(
-                f"\n  Last audit event: {latest.get('event_type', '')} on {latest.get('hunt_id', '')} ({latest.get('target', '')})",
-                style="bright_cyan",
-            )
-        return Panel(
-            text,
-            title="[bold bright_cyan]DRIFT INSPECTION & DIFF[/]",
-            border_style="bright_magenta",
-            box=box.ROUNDED,
-        )
-
-    diff_text = Text()
-    diff_text.append(
-        f"HUNT: {diff_event.get('hunt_id', '')}  TARGET: {diff_event.get('target', '')}  EVENT: {diff_event.get('event_type', '')}\n",
-        style="bold bright_cyan",
-    )
-    diff_text.append(f"FILE: {diff_event.get('file_name', '')}\n", style="dim")
-    diff_text.append(
-        f"TIMESTAMP: {diff_event.get('timestamp', '')[:19].replace('T', ' ')}  ACTOR: {diff_event.get('actor', '')}\n\n",
-        style="dim",
-    )
-
-    raw_diff = str(diff_event.get("drift_diff", ""))
-    lines = raw_diff.splitlines()
-    for line in lines[:10]:
-        if line.startswith("-"):
-            diff_text.append(line + "\n", style="bright_red")
-        elif line.startswith("+"):
-            diff_text.append(line + "\n", style="bright_green")
-        elif line.startswith("@") or line.startswith("---") or line.startswith("+++"):
-            diff_text.append(line + "\n", style="bold bright_cyan")
-        else:
-            diff_text.append(line + "\n", style="dim")
-    if len(lines) > 10:
-        diff_text.append(f"... ({len(lines) - 10} additional diff lines)\n", style="dim")
-
-    return Panel(
-        diff_text,
-        title="[bold bright_cyan]DRIFT INSPECTION & DIFF[/]",
-        border_style="bright_magenta",
-        box=box.ROUNDED,
-    )
-
-
-def _siem_drift_events_table(
-    events: Optional[List[Dict[str, Any]]] = None,
-) -> Panel:
-    """Historical audit sweep and reconciliation event log table."""
-    table = Table(box=box.SIMPLE, expand=True, show_header=True, header_style="bold bright_cyan", padding=(0, 1))
-    table.add_column("TIME", width=8, style="dim")
-    table.add_column("EVENT", width=15)
-    table.add_column("HUNT", width=8, style="bright_cyan")
-    table.add_column("TARGET", width=11, style="dim")
-    table.add_column("ACTOR", width=8, style="dim")
-    table.add_column("DETAIL", ratio=1, overflow="ellipsis", no_wrap=True)
-
-    ev_list = events or []
-    if not ev_list:
-        table.add_row("--:--:--", "[dim]standby[/]", "--", "--", "--", "[dim]No drift or reconciliation events logged yet.[/]")
-    else:
-        for ev in ev_list[:12]:
-            ts = str(ev.get("timestamp") or "")
-            time_part = ts[11:19] if len(ts) >= 19 else ts
-            event_type = str(ev.get("event_type") or "unknown")
-            if event_type == "reconciled":
-                event_style = "[bold bright_green]reconciled[/]"
-            elif event_type == "decommissioned":
-                event_style = "[bold bright_cyan]decommissioned[/]"
-            elif event_type == "pending_decommission":
-                event_style = "[bold bright_yellow]pending_decom[/]"
-            elif event_type == "drift_detected":
-                event_style = "[bold bright_red]drift_detected[/]"
-            elif event_type == "missing_remote":
-                event_style = "[bold bright_yellow]missing_remote[/]"
-            else:
-                event_style = f"[bright_white]{event_type}[/]"
-
-            table.add_row(
-                time_part,
-                event_style,
-                str(ev.get("hunt_id") or "--"),
-                str(ev.get("target") or "--"),
-                str(ev.get("actor") or "system"),
-                str(ev.get("detail") or ""),
-            )
-
-    return Panel(
-        table,
-        title="[bold bright_cyan]SIEM AUDIT & DRIFT EVENT LOG[/]",
-        border_style="bright_magenta",
-        box=box.ROUNDED,
-    )
-
-
-def _siem_query_versions_table(
-    versions: Optional[List[Dict[str, Any]]] = None,
-) -> Panel:
-    """Immutable deployed query versions recorded in SQLite history."""
-    table = Table(box=box.SIMPLE, expand=True, show_header=True, header_style="bold bright_cyan", padding=(0, 1))
-    table.add_column("HUNT", width=8, style="bright_cyan")
-    table.add_column("VER", width=5, style="bold bright_white")
-    table.add_column("TARGET", width=11, style="dim")
-    table.add_column("QUERY HASH", width=12, style="dim")
-    table.add_column("DEPLOYED", width=16, style="dim")
-    table.add_column("BY", width=8, style="dim")
-    table.add_column("STATUS", width=8)
-
-    v_list = versions or []
-    if not v_list:
-        table.add_row("--", "--", "--", "--", "--", "--", "[dim]none[/]")
-    else:
-        for ver in v_list[:12]:
-            q_hash = str(ver.get("query_hash") or "")
-            hash_display = f"{q_hash[:8]}…" if len(q_hash) > 8 else q_hash
-            dep_at = str(ver.get("deployed_at") or "")
-            dep_display = dep_at[:16].replace("T", " ") if len(dep_at) >= 16 else dep_at
-            status = str(ver.get("status") or "active")
-            if status == "active":
-                st_display = "[bright_green]active[/]"
-            elif status in ("decommissioned", "retired"):
-                st_display = "[bright_cyan]decommissioned[/]"
-            elif status == "deprecated":
-                st_display = "[bright_yellow]deprecated[/]"
-            else:
-                st_display = f"[dim]{status}[/]"
-
-            table.add_row(
-                str(ver.get("hunt_id") or "--"),
-                f"v{ver.get('version', 1)}",
-                str(ver.get("target") or "--"),
-                hash_display,
-                dep_display,
-                str(ver.get("deployed_by") or "system"),
-                st_display,
-            )
-
-    return Panel(
-        table,
-        title="[bold bright_cyan]QUERY VERSION CATALOG[/]",
-        border_style="bright_magenta",
-        box=box.ROUNDED,
-    )
-
 
 
 def _render_dashboard(
@@ -2820,4 +1596,3 @@ def _render_dashboard(
     else:
         layout["operations"].update(main_panel)
     return layout
-
