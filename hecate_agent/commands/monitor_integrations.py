@@ -33,13 +33,13 @@ from hecate_agent.integration_registry import (
 _INTEGRATION_IDS = {item.label: item.id for item in BY_LABEL.values()}
 _SOURCE_INTEGRATIONS = {item.cti_name for item in INTEGRATIONS if item.follows_cti_provider}
 
+
 def _backlog_observation(events: List[TrailEvent]) -> Optional[Tuple[int, str]]:
     for event in reversed(events):
         match = re.search(r"(\d+) high-signal waiting in its backlog", event.message)
         if match:
             return int(match.group(1)), event.timestamp[-8:]
     return None
-
 
 
 def _credential_status(workspace: Optional[Path] = None) -> Tuple[List[str], List[str]]:
@@ -168,9 +168,13 @@ def _detect_active_integration(
             ("urlscan", "URLScan"),
             ("hybrid", "Hybrid"),
             ("rdap", "RDAP"),
+            ("geoip", "GeoIP"),
+            ("ipinfo", "GeoIP"),
             ("crt.sh", "crt.sh"),
             ("pdns", "PDNS"),
             ("spur", "Spur"),
+            ("tor/proxy", "Tor/Proxy"),
+            ("tor exit", "Tor/Proxy"),
         ):
             if token in msg:
                 return label
@@ -213,9 +217,7 @@ def _read_jsonl_tail(path: Path) -> List[dict]:
     return rows
 
 
-def _api_traffic(
-    workspace: Optional[Path], since: float, env_values: Dict[str, str]
-) -> Dict[str, Dict[str, float]]:
+def _api_traffic(workspace: Optional[Path], since: float, env_values: Dict[str, str]) -> Dict[str, Dict[str, float]]:
     """Per-label request counts since ``since``.
 
     Prefers ``logs/events.jsonl`` http events (the cycle event channel) and
@@ -436,9 +438,7 @@ def _integrations_panel(
     for item in STATUS_INTEGRATIONS:
         label, names = item.label, item.env_keys
         is_set = (
-            any(os.environ.get(name) for name in names)
-            or any(name in file_keys for name in names)
-            or item.always_configured
+            any(os.environ.get(name) for name in names) or any(name in file_keys for name in names) or item.always_configured
         )
         if label == "LLM":
             if is_set:
@@ -702,13 +702,23 @@ def _integrations_panel(
             else:
                 services_data.append((label, False, "unconfigured", "--"))
         elif label == "RDAP":
-            detail = "whois/age"
-            dom_count = 0
+            detail = "whois/net"
+            query_count = 0
             for e in active_enrichment_events:
-                m = re.search(r"(\d+)\s+domain", e.message, re.IGNORECASE)
+                dom = re.search(r"(\d+)\s+domain", e.message, re.IGNORECASE)
+                ip = re.search(r"(\d+)\s+ip", e.message, re.IGNORECASE)
+                n = (int(dom.group(1)) if dom else 0) + (int(ip.group(1)) if ip else 0)
+                query_count = max(query_count, n)
+            metric = f"{query_count} queries"
+            services_data.append((label, True, detail, metric))
+        elif label == "GeoIP":
+            detail = "geo/asn"
+            ip_count = 0
+            for e in active_enrichment_events:
+                m = re.search(r"(\d+)\s+ip", e.message, re.IGNORECASE)
                 if m:
-                    dom_count = max(dom_count, int(m.group(1)))
-            metric = f"{dom_count} queries"
+                    ip_count = max(ip_count, int(m.group(1)))
+            metric = f"{ip_count} queries"
             services_data.append((label, True, detail, metric))
         elif label == "crt.sh":
             detail = "ct logs"
@@ -835,7 +845,11 @@ def _integrations_panel(
 
     env_values = {**file_values, **os.environ}
     provider = env_values.get("HECATE_RUNNER_CTI_PROVIDER", "file")
-    active_sources = set(env_values.get("HECATE_RUNNER_CTI_MULTI_PROVIDERS", "rss,otx,misp").replace(" ", "").split(",")) if provider == "multi" else {provider}
+    active_sources = (
+        set(env_values.get("HECATE_RUNNER_CTI_MULTI_PROVIDERS", "rss,otx,misp").replace(" ", "").split(","))
+        if provider == "multi"
+        else {provider}
+    )
     for item in SOURCE_INTEGRATIONS:
         services_data.append((item.label, True, "source", "--"))
     confirmed_data = []
@@ -844,10 +858,20 @@ def _integrations_panel(
         name = item.id
         source_name = item.cti_name
         enabled = source_name in active_sources if item.follows_cti_provider else configured
-        if name == "misp" and str(env_values.get("HECATE_RUNNER_MISP_PUBLISHING_ENABLED", "false")).lower() in {"true", "1", "yes", "on"}:
+        if name == "misp" and str(env_values.get("HECATE_RUNNER_MISP_PUBLISHING_ENABLED", "false")).lower() in {
+            "true",
+            "1",
+            "yes",
+            "on",
+        }:
             name, enabled = "misp_output", True
             detail = "output only" if source_name not in active_sources else "input/output"
-        if name == "slack" and str(env_values.get("HECATE_RUNNER_SLACK_INTERACTIVE_ENABLED", "false")).lower() not in {"true", "1", "yes", "on"}:
+        if name == "slack" and str(env_values.get("HECATE_RUNNER_SLACK_INTERACTIVE_ENABLED", "false")).lower() not in {
+            "true",
+            "1",
+            "yes",
+            "on",
+        }:
             detail = "output only"
         ok, reason = _confirmed_integration(workspace, name, enabled)
         confirmed_data.append((label, ok, detail if ok else reason, metric))
@@ -888,9 +912,7 @@ def _integrations_panel(
             row = [
                 Text(
                     f" {label} " if is_active else label,
-                    style="bold black on bright_cyan"
-                    if is_active
-                    else _integration_style(ok, detail),
+                    style="bold black on bright_cyan" if is_active else _integration_style(ok, detail),
                 )
                 for label, ok, detail, is_active in display_items[start : start + 4]
             ]
@@ -901,7 +923,7 @@ def _integrations_panel(
         table.add_column("status", ratio=1, overflow="ellipsis", no_wrap=True)
         table.add_column("metric", justify="right", width=11, no_wrap=True)
         for label, is_set, detail, metric in services_data:
-            is_active = (label == active_integration)
+            is_active = label == active_integration
             if is_active:
                 lbl_style = "bold black on bright_cyan"
                 st = Text.assemble(("ACTIVE", "bold black on bright_cyan"), (" · ", "dim"), (detail, "bright_white"))
@@ -918,7 +940,7 @@ def _integrations_panel(
     else:
 
         def format_item(lbl: str, is_on: bool, det: str, met: str) -> Text:
-            is_active = (lbl == active_integration)
+            is_active = lbl == active_integration
             if is_active:
                 lbl_style = "bold black on bright_cyan"
                 st = "ACTIVE"

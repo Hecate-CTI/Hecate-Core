@@ -25,6 +25,10 @@ from hecate_agent.enrichment.providers.virustotal import (
 from hecate_agent.enrichment.providers.rdap import (
     _format_rdap_date,
     query_rdap_domain,
+    query_rdap_ip,
+)
+from hecate_agent.enrichment.providers.geoip import (
+    query_geoip_ip,
 )
 from hecate_agent.enrichment.providers.greynoise import (
     extract_greynoise_context,
@@ -150,6 +154,8 @@ __all__ = [
     "query_vt_pdns_ip",
     "_format_rdap_date",
     "query_rdap_domain",
+    "query_rdap_ip",
+    "query_geoip_ip",
     "extract_greynoise_context",
     "query_greynoise_ip",
     "query_shodan_ip",
@@ -222,6 +228,7 @@ __all__ = [
     "query_triage_hash",
 ]
 
+
 def _setting(name: str, default: str = "") -> str:
     """Read a credential or endpoint from the environment (loaded from .env by the CLI).
 
@@ -279,9 +286,6 @@ def _get_apex_domain(domain: str) -> str:
     if last_two in two_part_tlds and len(parts) > 2:
         return ".".join(parts[-3:])
     return ".".join(parts[-2:])
-
-
-
 
 
 def extract_indicators(text: str) -> Dict[str, List[str]]:
@@ -529,10 +533,6 @@ def extract_indicators(text: str) -> Dict[str, List[str]]:
     return indicators
 
 
-
-
-
-
 class _EnrichmentTally:
     def __init__(
         self,
@@ -572,11 +572,9 @@ def generate_enrichment_summary(
     stats: Dict[str, Dict[str, int]] | None = None,
     citations: List[Dict[str, str]] | None = None,
 ) -> str:
-    """Extracts indicators and queries OSINT platforms, returning a markdown summary.
+    """Extract indicators and run OSINT lookups into a markdown summary.
 
-    ``stats``, when given, is filled per service with how many lookups ran and
-    how they came out. ``citations``, when given, receives one record per
-    lookup so the hunt can label each observable corroborated or not.
+    Optional ``stats`` / ``citations`` collect per-service outcomes.
     """
     indicators = extract_indicators(threat_intel)
     if not any(indicators.values()):
@@ -596,9 +594,7 @@ def _generate_enrichment_summary_body(
 ) -> str:
     rec = _EnrichmentTally(stats, citations)
 
-    summary = [
-        "\n\n### 🛡️ Automated Threat Enrichment (VT, AlienVault OTX, URLScan.io, crt.sh, Passive DNS, Tor Project, IPinfo, Hybrid Analysis, Hatching Triage, Abuse.ch [ThreatFox, MalwareBazaar, Feodo, SSLBL, URLhaus], GreyNoise, AbuseIPDB, Shodan, Censys [JARM/JA4], Shadowserver Foundation, RDAP, EPSS, VulnCheck KEV, OSV.dev & MISP)"
-    ]
+    summary = ["\n\n### 🛡️ Automated Threat Enrichment"]
 
     from concurrent.futures import ThreadPoolExecutor
 
@@ -616,22 +612,24 @@ def _generate_enrichment_summary_body(
         lines = [
             f"- **Hash {h}**:\n"
             f"  - *VirusTotal:* {res}\n"
-            f"  - *AlienVault OTX:* {otx_res}\n"
-            f"  - *Hybrid Analysis (Falcon Sandbox):* {ha_res}\n"
-            f"  - *Hatching Triage (tria.ge Sandbox):* {triage_res}\n"
-            f"  - *Abuse.ch (MalwareBazaar):* {mb_res}"
+            f"  - *OTX:* {otx_res}\n"
+            f"  - *Hybrid Analysis:* {ha_res}\n"
+            f"  - *Triage:* {triage_res}\n"
+            f"  - *MalwareBazaar:* {mb_res}"
         ]
         if not ss_hash_res.startswith("No record on Shadowserver") and not ss_hash_res.startswith("Invalid hash"):
-            lines.append(f"  - *Shadowserver Foundation (Malware Analysis):* {ss_hash_res}")
+            lines.append(f"  - *Shadowserver:* {ss_hash_res}")
         if len(h) in (32, 40):
-            lines.append(f"  - *Abuse.ch (SSLBL Fingerprint):* {sslbl_res}")
+            lines.append(f"  - *SSLBL:* {sslbl_res}")
         if not urlhaus_res.startswith("No payload on URLhaus"):
-            lines.append(f"  - *Abuse.ch (URLhaus Payload):* {urlhaus_res}")
-        lines.append(f"  - *Abuse.ch (ThreatFox):* {threatfox_res}")
-        lines.append(f"  - *Internal MISP:* {misp_res}")
+            lines.append(f"  - *URLhaus:* {urlhaus_res}")
+        lines.append(f"  - *ThreatFox:* {threatfox_res}")
+        lines.append(f"  - *MISP:* {misp_res}")
         return "\n".join(lines)
 
     def process_ip(ip: str) -> str:
+        geoip_res = rec("GeoIP", query_geoip_ip(ip), ip, "ip")
+        rdap_ip_res = rec("RDAP", query_rdap_ip(ip), ip, "ip")
         vt_res = rec("VirusTotal", query_vt_ip(ip), ip, "ip")
         otx_res = rec("OTX", query_otx_ip(ip), ip, "ip")
         feodo_res = rec("Feodo", query_feodotracker_ip(ip), ip, "ip")
@@ -647,30 +645,32 @@ def _generate_enrichment_summary_body(
         misp_res = rec("MISP", query_misp_indicator(ip), ip, "ip")
         lines = [
             f"- **IP {ip}**:\n"
+            f"  - *GeoIP:* {geoip_res}\n"
+            f"  - *RDAP (IP):* {rdap_ip_res}\n"
             f"  - *VirusTotal:* {vt_res}\n"
-            f"  - *AlienVault OTX:* {otx_res}\n"
-            f"  - *Abuse.ch (Feodo Tracker C2):* {feodo_res}\n"
+            f"  - *OTX:* {otx_res}\n"
+            f"  - *Feodo:* {feodo_res}\n"
             f"  - *AbuseIPDB:* {abuseipdb_res}"
         ]
         if anon_res and not anon_res.startswith("Private") and not anon_res.startswith("Invalid"):
-            lines.append(f"  - *Anonymity & Proxy (Tor / Hosting / VPN):* {anon_res}")
+            lines.append(f"  - *Tor/Proxy:* {anon_res}")
         if not spur_res.startswith("SPUR_API_KEY not configured"):
-            lines.append(f"  - *Spur.us (Proxy & Infrastructure):* {spur_res}")
+            lines.append(f"  - *Spur:* {spur_res}")
         if not pdns_res.startswith("No passive DNS records found"):
-            lines.append(f"  - *Passive DNS (Historical Correlated Hostnames):* {pdns_res}")
+            lines.append(f"  - *Passive DNS:* {pdns_res}")
         if (
             not ss_ip_res.startswith("No ASN record")
             and not ss_ip_res.startswith("Private")
             and not ss_ip_res.startswith("Invalid")
         ):
-            lines.append(f"  - *Shadowserver Foundation (Network Origin):* {ss_ip_res}")
+            lines.append(f"  - *Shadowserver:* {ss_ip_res}")
         lines.extend(
             [
                 f"  - *GreyNoise:* {gn_res}",
                 f"  - *Shodan:* {shodan_res}",
                 f"  - *Censys:* {censys_res}",
-                f"  - *Abuse.ch (ThreatFox):* {threatfox_res}",
-                f"  - *Internal MISP:* {misp_res}",
+                f"  - *ThreatFox:* {threatfox_res}",
+                f"  - *MISP:* {misp_res}",
             ]
         )
         return "\n".join(lines)
@@ -685,22 +685,17 @@ def _generate_enrichment_summary_body(
         urlhaus_res = rec("URLhaus", query_urlhaus_host(d), d, "domain")
         threatfox_res = rec("ThreatFox", query_threatfox(d), d, "domain")
         misp_res = rec("MISP", query_misp_indicator(d), d, "domain")
-        lines = [
-            f"- **Domain {d}**:\n"
-            f"  - *VirusTotal:* {vt_res}\n"
-            f"  - *AlienVault OTX:* {otx_res}\n"
-            f"  - *RDAP (Domain Age & Registrar):* {rdap_res}"
-        ]
+        lines = [f"- **Domain {d}**:\n  - *VirusTotal:* {vt_res}\n  - *OTX:* {otx_res}\n  - *RDAP (domain):* {rdap_res}"]
         if not urlscan_res.startswith("Not indexed on URLScan"):
-            lines.append(f"  - *URLScan.io (Web Lures & Staging):* {urlscan_res}")
+            lines.append(f"  - *URLScan:* {urlscan_res}")
         if not crtsh_res.startswith("No certificates found on crt.sh"):
-            lines.append(f"  - *crt.sh (Certificate Transparency & Sibling Domains):* {crtsh_res}")
+            lines.append(f"  - *crt.sh:* {crtsh_res}")
         if not pdns_res.startswith("No passive DNS records found"):
-            lines.append(f"  - *Passive DNS (Historical IP Resolutions):* {pdns_res}")
+            lines.append(f"  - *Passive DNS:* {pdns_res}")
         if not urlhaus_res.startswith("Not listed on URLhaus"):
-            lines.append(f"  - *Abuse.ch (URLhaus Host):* {urlhaus_res}")
-        lines.append(f"  - *Abuse.ch (ThreatFox):* {threatfox_res}")
-        lines.append(f"  - *Internal MISP:* {misp_res}")
+            lines.append(f"  - *URLhaus:* {urlhaus_res}")
+        lines.append(f"  - *ThreatFox:* {threatfox_res}")
+        lines.append(f"  - *MISP:* {misp_res}")
         return "\n".join(lines)
 
     def process_url(u: str) -> str:
@@ -710,10 +705,10 @@ def _generate_enrichment_summary_body(
         misp_res = rec("MISP", query_misp_indicator(u), u, "url")
         return (
             f"- **URL {u}**:\n"
-            f"  - *URLScan.io (DOM & Web Lure Analysis):* {urlscan_res}\n"
-            f"  - *Abuse.ch (URLhaus):* {urlhaus_res}\n"
-            f"  - *Abuse.ch (ThreatFox):* {threatfox_res}\n"
-            f"  - *Internal MISP:* {misp_res}"
+            f"  - *URLScan:* {urlscan_res}\n"
+            f"  - *URLhaus:* {urlhaus_res}\n"
+            f"  - *ThreatFox:* {threatfox_res}\n"
+            f"  - *MISP:* {misp_res}"
         )
 
     with ThreadPoolExecutor(max_workers=10) as executor:
@@ -763,12 +758,12 @@ def _generate_enrichment_summary_body(
             msrc_res = rec("MSRC", query_msrc_cve(cve), cve, "cve")
             summary.append(
                 f"- **Vulnerability {cve}**:\n"
-                f"  - *FIRST EPSS (Exploit Prediction):* {epss_res}\n"
-                f"  - *VulnCheck KEV (Active Exploitation):* {vulncheck_res}\n"
-                f"  - *Microsoft MSRC (Security Guidance):* {msrc_res}\n"
-                f"  - *OSV.dev (Open Source Supply Chain):* {osv_res}\n"
-                f"  - *AlienVault OTX:* {otx_res}\n"
-                f"  - *Internal MISP:* {misp_res}"
+                f"  - *EPSS:* {epss_res}\n"
+                f"  - *VulnCheck:* {vulncheck_res}\n"
+                f"  - *MSRC:* {msrc_res}\n"
+                f"  - *OSV.dev:* {osv_res}\n"
+                f"  - *OTX:* {otx_res}\n"
+                f"  - *MISP:* {misp_res}"
             )
 
     final_output = ""
