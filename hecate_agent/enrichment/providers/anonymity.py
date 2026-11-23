@@ -6,6 +6,7 @@ from hecate_agent.enrichment.result import report
 
 import ipaddress
 import logging
+import threading
 import time
 from typing import Any, Dict, Set, Tuple, cast
 
@@ -46,7 +47,7 @@ def _get_known_publishers() -> Set[str]:
 
 
 _TOR_EXIT_CACHE: Dict[str, Any] = {"data": set(), "ts": 0.0}
-
+_TOR_EXIT_LOCK = threading.Lock()
 
 _TOR_EXIT_TTL: float = 3600.0  # 1-hour cache TTL (matches Tor consensus cycle)
 
@@ -57,18 +58,25 @@ def _get_tor_exit_nodes() -> Set[str]:
     cached_set = _TOR_EXIT_CACHE.get("data")
     if cached_set and (now - float(_TOR_EXIT_CACHE.get("ts", 0.0)) < _TOR_EXIT_TTL):
         return cast(Set[str], cached_set)
-    try:
-        url = "https://check.torproject.org/torbulkexitlist"
-        resp = httpx.get(url, timeout=5.0)
-        if resp.status_code == 200:
-            exit_ips: Set[str] = {line.strip() for line in resp.text.splitlines() if line.strip() and not line.startswith("#")}
-            if exit_ips:
-                _TOR_EXIT_CACHE["data"] = exit_ips
-                _TOR_EXIT_CACHE["ts"] = now
-                return exit_ips
-    except Exception as e:
-        logger.debug(f"Failed to fetch Tor bulk exit list: {e}")
-    return cast(Set[str], cached_set) if cached_set else set()
+    with _TOR_EXIT_LOCK:
+        now = time.time()
+        cached_set = _TOR_EXIT_CACHE.get("data")
+        if cached_set and (now - float(_TOR_EXIT_CACHE.get("ts", 0.0)) < _TOR_EXIT_TTL):
+            return cast(Set[str], cached_set)
+        try:
+            url = "https://check.torproject.org/torbulkexitlist"
+            resp = httpx.get(url, timeout=5.0)
+            if resp.status_code == 200:
+                exit_ips: Set[str] = {
+                    line.strip() for line in resp.text.splitlines() if line.strip() and not line.startswith("#")
+                }
+                if exit_ips:
+                    _TOR_EXIT_CACHE["data"] = exit_ips
+                    _TOR_EXIT_CACHE["ts"] = now
+                    return exit_ips
+        except Exception as e:
+            logger.debug(f"Failed to fetch Tor bulk exit list: {e}")
+        return cast(Set[str], cached_set) if cached_set else set()
 
 
 def is_tor_exit_node(ip: str) -> bool:

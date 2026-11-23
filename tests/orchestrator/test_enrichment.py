@@ -2293,3 +2293,136 @@ def test_generate_enrichment_summary_includes_msrc():
         summary = generate_enrichment_summary(threat_intel)
         assert "*MSRC:*" in summary
         assert "MSRC: Windows TCP/IP RCE · Severity: Critical · CVSS: 9.8" in summary
+
+
+def test_concurrent_readers_coordinate_blocklist_refreshes():
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    from hecate_agent.enrichment.providers import anonymity, threat_intel_feeds
+
+    # Reset caches
+    anonymity._TOR_EXIT_CACHE["data"] = set()
+    anonymity._TOR_EXIT_CACHE["ts"] = 0.0
+    threat_intel_feeds._FEODO_CACHE["data"] = None
+    threat_intel_feeds._FEODO_CACHE["ts"] = 0.0
+    threat_intel_feeds._SSLBL_CACHE["data"] = None
+    threat_intel_feeds._SSLBL_CACHE["ts"] = 0.0
+
+    tor_call_count = 0
+    tor_lock = threading.Lock()
+
+    def mock_tor_get(*args, **kwargs):
+        nonlocal tor_call_count
+        with tor_lock:
+            tor_call_count += 1
+        time.sleep(0.02)
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.text = "198.51.100.1\n198.51.100.2\n"
+        return resp
+
+    with patch("hecate_agent.enrichment.providers.anonymity.httpx.get", side_effect=mock_tor_get):
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            futures = [pool.submit(anonymity._get_tor_exit_nodes) for _ in range(5)]
+            results = [f.result() for f in futures]
+
+        assert tor_call_count == 1
+        for res in results:
+            assert "198.51.100.1" in res
+
+    feodo_call_count = 0
+    feodo_lock = threading.Lock()
+
+    def mock_feodo_get(*args, **kwargs):
+        nonlocal feodo_call_count
+        with feodo_lock:
+            feodo_call_count += 1
+        time.sleep(0.02)
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = [{"ip_address": "203.0.113.10", "malware": "QakBot"}]
+        return resp
+
+    with patch("hecate_agent.enrichment.providers.threat_intel_feeds.httpx.get", side_effect=mock_feodo_get):
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            futures = [pool.submit(threat_intel_feeds._get_feodo_ip_map) for _ in range(5)]
+            results = [f.result() for f in futures]
+
+        assert feodo_call_count == 1
+        for res in results:
+            assert "203.0.113.10" in res
+
+    sslbl_call_count = 0
+    sslbl_lock = threading.Lock()
+    mock_sha1 = "a" * 40
+
+    def mock_sslbl_get(*args, **kwargs):
+        nonlocal sslbl_call_count
+        with sslbl_lock:
+            sslbl_call_count += 1
+        time.sleep(0.02)
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.text = f"2024-01-01,{mock_sha1},Dridex C2\n"
+        return resp
+
+    with patch("hecate_agent.enrichment.providers.threat_intel_feeds.httpx.get", side_effect=mock_sslbl_get):
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            futures = [pool.submit(threat_intel_feeds._get_sslbl_fingerprint_map) for _ in range(5)]
+            results = [f.result() for f in futures]
+
+        # 1 call for sslblacklist.csv, 1 call for ja3_fingerprints.csv
+        assert sslbl_call_count == 2
+        for res in results:
+            assert mock_sha1 in res
+
+
+def test_provider_bounded_concurrency():
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    from hecate_agent.orchestrator.enrichment import (
+        _EnrichmentTally,
+        _query_provider_bounded,
+        _reset_provider_semaphores,
+        get_provider_semaphore,
+    )
+
+    _reset_provider_semaphores()
+    sem = get_provider_semaphore("TestService", max_concurrent=2)
+    assert sem._value == 2
+
+    current_concurrent = 0
+    max_concurrent_seen = 0
+    lock = threading.Lock()
+    rec = _EnrichmentTally(None, None)
+
+    def slow_query():
+        nonlocal current_concurrent, max_concurrent_seen
+        with lock:
+            current_concurrent += 1
+            if current_concurrent > max_concurrent_seen:
+                max_concurrent_seen = current_concurrent
+        time.sleep(0.03)
+        with lock:
+            current_concurrent -= 1
+        return "result"
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = [
+            pool.submit(
+                _query_provider_bounded,
+                rec,
+                "TestService",
+                slow_query,
+                f"obs-{i}",
+                "ip",
+                limit=2,
+            )
+            for i in range(6)
+        ]
+        results = [f.result() for f in futures]
+
+    assert max_concurrent_seen <= 2
+    assert all(r == "result" for r in results)

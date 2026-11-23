@@ -5,6 +5,7 @@ from __future__ import annotations
 from hecate_agent.enrichment.result import report
 
 import logging
+import threading
 import time
 from typing import Any, Dict, List, Set, Tuple, cast
 
@@ -16,33 +17,39 @@ logger = logging.getLogger(__name__)
 
 def _setting(name: str, default: str = "") -> str:
     from hecate_agent.orchestrator import enrichment
+
     return enrichment._setting(name, default)
 
 
 def _misp_verify_tls() -> bool:
     from hecate_agent.orchestrator import enrichment
+
     return enrichment._misp_verify_tls()
 
 
 def refang(value: str) -> str:
     from hecate_agent.orchestrator import enrichment
+
     return enrichment.refang(value)
 
 
 def _get_apex_domain(domain: str) -> str:
     from hecate_agent.orchestrator import enrichment
+
     return enrichment._get_apex_domain(domain)
 
 
 def _get_known_publishers() -> Set[str]:
     from hecate_agent.orchestrator import enrichment
+
     return getattr(enrichment, "_KNOWN_PUBLISHER_DOMAINS", set())
 
 
 _FEODO_CACHE: Dict[str, Any] = {"data": None, "ts": 0.0}
-
+_FEODO_LOCK = threading.Lock()
 
 _SSLBL_CACHE: Dict[str, Any] = {"data": None, "ts": 0.0}
+_SSLBL_LOCK = threading.Lock()
 
 
 def query_threatfox(indicator: str) -> str:
@@ -65,7 +72,7 @@ def query_threatfox(indicator: str) -> str:
                     summary += f" | Tags: {', '.join(tags[:3])}"
                 return report(summary)
             elif data.get("query_status") == "no_result":
-                return report("No results on ThreatFox.", 'missing')
+                return report("No results on ThreatFox.", "missing")
             else:
                 return report(f"ThreatFox error: {data.get('query_status')}")
         return report(f"HTTP {resp.status_code}")
@@ -77,7 +84,7 @@ def query_malwarebazaar(file_hash: str) -> str:
     """Query Abuse.ch MalwareBazaar for sample metadata, file type, signature, and YARA rules."""
     key = _setting("ABUSECH_API_KEY")
     if not key:
-        return report("ABUSECH_API_KEY not configured.", 'unconfigured')
+        return report("ABUSECH_API_KEY not configured.", "unconfigured")
     url = "https://mb-api.abuse.ch/api/v1/"
     headers = {"Auth-Key": key}
     data = {"query": "get_info", "hash": file_hash}
@@ -106,11 +113,11 @@ def query_malwarebazaar(file_hash: str) -> str:
                     parts.append(f"Tags: {', '.join(tags[:3])}")
                 return report(" | ".join(parts))
             elif status == "hash_not_found":
-                return report("No sample found on MalwareBazaar.", 'missing')
+                return report("No sample found on MalwareBazaar.", "missing")
             else:
                 return report(f"MalwareBazaar: {status}")
         elif resp.status_code in (401, 403):
-            return report("MalwareBazaar Auth Error (check ABUSECH_API_KEY).", 'errors')
+            return report("MalwareBazaar Auth Error (check ABUSECH_API_KEY).", "errors")
         return report(f"HTTP {resp.status_code}")
     except Exception as e:
         return report(f"Error querying MalwareBazaar: {e}")
@@ -121,21 +128,25 @@ def _get_feodo_ip_map() -> Dict[str, Dict[str, Any]]:
     now = time.time()
     if _FEODO_CACHE.get("data") is not None and (now - float(_FEODO_CACHE.get("ts", 0.0)) < 3600.0):
         return cast(Dict[str, Dict[str, Any]], _FEODO_CACHE["data"])
-    try:
-        url = "https://feodotracker.abuse.ch/downloads/ipblocklist.json"
-        resp = httpx.get(url, timeout=5.0)
-        if resp.status_code == 200:
-            entries = resp.json()
-            ip_map: Dict[str, Dict[str, Any]] = {
-                str(item["ip_address"]): item for item in entries if isinstance(item, dict) and item.get("ip_address")
-            }
-            _FEODO_CACHE["data"] = ip_map
-            _FEODO_CACHE["ts"] = now
-            return ip_map
-    except Exception as e:
-        logger.debug(f"Failed to fetch Feodo Tracker blocklist: {e}")
-    cached = _FEODO_CACHE.get("data")
-    return cast(Dict[str, Dict[str, Any]], cached) if cached is not None else {}
+    with _FEODO_LOCK:
+        now = time.time()
+        if _FEODO_CACHE.get("data") is not None and (now - float(_FEODO_CACHE.get("ts", 0.0)) < 3600.0):
+            return cast(Dict[str, Dict[str, Any]], _FEODO_CACHE["data"])
+        try:
+            url = "https://feodotracker.abuse.ch/downloads/ipblocklist.json"
+            resp = httpx.get(url, timeout=5.0)
+            if resp.status_code == 200:
+                entries = resp.json()
+                ip_map: Dict[str, Dict[str, Any]] = {
+                    str(item["ip_address"]): item for item in entries if isinstance(item, dict) and item.get("ip_address")
+                }
+                _FEODO_CACHE["data"] = ip_map
+                _FEODO_CACHE["ts"] = now
+                return ip_map
+        except Exception as e:
+            logger.debug(f"Failed to fetch Feodo Tracker blocklist: {e}")
+        cached = _FEODO_CACHE.get("data")
+        return cast(Dict[str, Dict[str, Any]], cached) if cached is not None else {}
 
 
 def _get_sslbl_fingerprint_map() -> Dict[str, Tuple[str, str]]:
@@ -143,37 +154,41 @@ def _get_sslbl_fingerprint_map() -> Dict[str, Tuple[str, str]]:
     now = time.time()
     if _SSLBL_CACHE.get("data") is not None and (now - float(_SSLBL_CACHE.get("ts", 0.0)) < 3600.0):
         return cast(Dict[str, Tuple[str, str]], _SSLBL_CACHE["data"])
-    try:
-        url = "https://sslbl.abuse.ch/blacklist/sslblacklist.csv"
-        resp = httpx.get(url, timeout=5.0)
-        if resp.status_code == 200:
-            res_map: Dict[str, Tuple[str, str]] = {}
-            for line in resp.text.splitlines():
-                if not line or line.startswith("#"):
-                    continue
-                parts = line.split(",")
-                if len(parts) >= 3:
-                    dt, sha1, reason = parts[0].strip(), parts[1].strip().lower(), parts[2].strip()
-                    res_map[sha1] = (reason, dt)
-            try:
-                ja3_resp = httpx.get("https://sslbl.abuse.ch/blacklist/ja3_fingerprints.csv", timeout=3.0)
-                if ja3_resp.status_code == 200:
-                    for line in ja3_resp.text.splitlines():
-                        if not line or line.startswith("#"):
-                            continue
-                        parts = line.split(",")
-                        if len(parts) >= 4:
-                            ja3_md5, reason = parts[0].strip().lower(), parts[3].strip()
-                            res_map[ja3_md5] = (f"JA3 {reason}", parts[1].strip())
-            except Exception:
-                pass
-            _SSLBL_CACHE["data"] = res_map
-            _SSLBL_CACHE["ts"] = now
-            return res_map
-    except Exception as e:
-        logger.debug(f"Failed to fetch SSLBL blocklist: {e}")
-    cached = _SSLBL_CACHE.get("data")
-    return cast(Dict[str, Tuple[str, str]], cached) if cached is not None else {}
+    with _SSLBL_LOCK:
+        now = time.time()
+        if _SSLBL_CACHE.get("data") is not None and (now - float(_SSLBL_CACHE.get("ts", 0.0)) < 3600.0):
+            return cast(Dict[str, Tuple[str, str]], _SSLBL_CACHE["data"])
+        try:
+            url = "https://sslbl.abuse.ch/blacklist/sslblacklist.csv"
+            resp = httpx.get(url, timeout=5.0)
+            if resp.status_code == 200:
+                res_map: Dict[str, Tuple[str, str]] = {}
+                for line in resp.text.splitlines():
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split(",")
+                    if len(parts) >= 3:
+                        dt, sha1, reason = parts[0].strip(), parts[1].strip().lower(), parts[2].strip()
+                        res_map[sha1] = (reason, dt)
+                try:
+                    ja3_resp = httpx.get("https://sslbl.abuse.ch/blacklist/ja3_fingerprints.csv", timeout=3.0)
+                    if ja3_resp.status_code == 200:
+                        for line in ja3_resp.text.splitlines():
+                            if not line or line.startswith("#"):
+                                continue
+                            parts = line.split(",")
+                            if len(parts) >= 4:
+                                ja3_md5, reason = parts[0].strip().lower(), parts[3].strip()
+                                res_map[ja3_md5] = (f"JA3 {reason}", parts[1].strip())
+                except Exception:
+                    pass
+                _SSLBL_CACHE["data"] = res_map
+                _SSLBL_CACHE["ts"] = now
+                return res_map
+        except Exception as e:
+            logger.debug(f"Failed to fetch SSLBL blocklist: {e}")
+        cached = _SSLBL_CACHE.get("data")
+        return cast(Dict[str, Tuple[str, str]], cached) if cached is not None else {}
 
 
 def query_feodotracker_ip(ip: str) -> str:
@@ -181,7 +196,7 @@ def query_feodotracker_ip(ip: str) -> str:
     clean_ip = ip.strip()
     feodo_map = _get_feodo_ip_map()
     if not feodo_map:
-        return report("Not listed on Feodo Tracker (feed empty/clean).", 'missing')
+        return report("Not listed on Feodo Tracker (feed empty/clean).", "missing")
     entry = feodo_map.get(clean_ip)
     if entry:
         malware = entry.get("malware") or "Unknown Botnet"
@@ -198,7 +213,7 @@ def query_feodotracker_ip(ip: str) -> str:
         if asn:
             details.append(f"ASN: {asn}")
         return report(" · ".join(details))
-    return report("Not listed on Feodo Tracker (clean).", 'missing')
+    return report("Not listed on Feodo Tracker (clean).", "missing")
 
 
 def query_sslbl_fingerprint(fingerprint: str) -> str:
@@ -206,12 +221,10 @@ def query_sslbl_fingerprint(fingerprint: str) -> str:
     clean_fp = fingerprint.strip().lower()
     sslbl_map = _get_sslbl_fingerprint_map()
     if not sslbl_map:
-        return report("Not listed on SSLBL (feed empty/clean).", 'missing')
+        return report("Not listed on SSLBL (feed empty/clean).", "missing")
     entry = sslbl_map.get(clean_fp)
     if entry:
         reason, listing_date = entry
         date_str = f" · Listed: {listing_date.split()[0]}" if listing_date else ""
         return report(f"Malicious SSL Cert / JA3: {reason}{date_str}")
-    return report("Not listed on SSLBL (clean).", 'missing')
-
-
+    return report("Not listed on SSLBL (clean).", "missing")
