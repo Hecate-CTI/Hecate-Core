@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 import re
+import threading
 import time
-from typing import Dict, List, Set
+from typing import Any, Callable, Dict, List, Set
 
 import httpx
 
@@ -226,6 +228,7 @@ __all__ = [
     "query_passive_dns_domain",
     "query_hybrid_analysis",
     "query_triage_hash",
+    "get_provider_semaphore",
 ]
 
 
@@ -567,6 +570,39 @@ class _EnrichmentTally:
         return result
 
 
+_PROVIDER_SEMAPHORES: Dict[str, threading.Semaphore] = {}
+_PROVIDER_SEMAPHORES_LOCK = threading.Lock()
+_DEFAULT_PROVIDER_CONCURRENCY = 4
+
+
+def get_provider_semaphore(service: str, max_concurrent: int = _DEFAULT_PROVIDER_CONCURRENCY) -> threading.Semaphore:
+    """Return a shared Semaphore bounding concurrent requests to an external provider."""
+    with _PROVIDER_SEMAPHORES_LOCK:
+        if service not in _PROVIDER_SEMAPHORES:
+            _PROVIDER_SEMAPHORES[service] = threading.Semaphore(max_concurrent)
+        return _PROVIDER_SEMAPHORES[service]
+
+
+def _reset_provider_semaphores() -> None:
+    """Reset provider semaphores (primarily for testing)."""
+    with _PROVIDER_SEMAPHORES_LOCK:
+        _PROVIDER_SEMAPHORES.clear()
+
+
+def _query_provider_bounded(
+    rec: _EnrichmentTally,
+    service: str,
+    query_fn: Callable[[], Any],
+    observable: str,
+    kind: str,
+    limit: int = _DEFAULT_PROVIDER_CONCURRENCY,
+) -> Any:
+    sem = get_provider_semaphore(service, limit)
+    with sem:
+        res = query_fn()
+    return rec(service, res, observable, kind)
+
+
 def generate_enrichment_summary(
     threat_intel: str,
     stats: Dict[str, Dict[str, int]] | None = None,
@@ -596,19 +632,34 @@ def _generate_enrichment_summary_body(
 
     summary = ["\n\n### 🛡️ Automated Threat Enrichment"]
 
-    from concurrent.futures import ThreadPoolExecutor
-
     def process_hash(h: str) -> str:
-        res = rec("VirusTotal", query_vt_hash(h), h, "hash")
-        otx_res = rec("OTX", query_otx_hash(h), h, "hash")
-        ha_res = rec("Hybrid Analysis", query_hybrid_analysis(h), h, "hash")
-        triage_res = rec("Triage", query_triage_hash(h), h, "hash")
-        mb_res = rec("MalwareBazaar", query_malwarebazaar(h), h, "hash")
-        ss_hash_res = rec("Shadowserver", query_shadowserver_hash(h), h, "hash")
-        sslbl_res = rec("SSLBL", query_sslbl_fingerprint(h), h, "hash")
-        urlhaus_res = rec("URLhaus", query_urlhaus_payload(h), h, "hash")
-        threatfox_res = rec("ThreatFox", query_threatfox(h), h, "hash")
-        misp_res = rec("MISP", query_misp_indicator(h), h, "hash")
+        tasks = {
+            "vt": ("VirusTotal", lambda: query_vt_hash(h)),
+            "otx": ("OTX", lambda: query_otx_hash(h)),
+            "ha": ("Hybrid Analysis", lambda: query_hybrid_analysis(h)),
+            "triage": ("Triage", lambda: query_triage_hash(h)),
+            "mb": ("MalwareBazaar", lambda: query_malwarebazaar(h)),
+            "ss": ("Shadowserver", lambda: query_shadowserver_hash(h)),
+            "sslbl": ("SSLBL", lambda: query_sslbl_fingerprint(h)),
+            "urlhaus": ("URLhaus", lambda: query_urlhaus_payload(h)),
+            "tf": ("ThreatFox", lambda: query_threatfox(h)),
+            "misp": ("MISP", lambda: query_misp_indicator(h)),
+        }
+        with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
+            futures = {
+                key: pool.submit(_query_provider_bounded, rec, service, fn, h, "hash") for key, (service, fn) in tasks.items()
+            }
+            res = futures["vt"].result()
+            otx_res = futures["otx"].result()
+            ha_res = futures["ha"].result()
+            triage_res = futures["triage"].result()
+            mb_res = futures["mb"].result()
+            ss_hash_res = futures["ss"].result()
+            sslbl_res = futures["sslbl"].result()
+            urlhaus_res = futures["urlhaus"].result()
+            threatfox_res = futures["tf"].result()
+            misp_res = futures["misp"].result()
+
         lines = [
             f"- **Hash {h}**:\n"
             f"  - *VirusTotal:* {res}\n"
@@ -628,21 +679,43 @@ def _generate_enrichment_summary_body(
         return "\n".join(lines)
 
     def process_ip(ip: str) -> str:
-        geoip_res = rec("GeoIP", query_geoip_ip(ip), ip, "ip")
-        rdap_ip_res = rec("RDAP", query_rdap_ip(ip), ip, "ip")
-        vt_res = rec("VirusTotal", query_vt_ip(ip), ip, "ip")
-        otx_res = rec("OTX", query_otx_ip(ip), ip, "ip")
-        feodo_res = rec("Feodo", query_feodotracker_ip(ip), ip, "ip")
-        abuseipdb_res = rec("AbuseIPDB", query_abuseipdb_ip(ip), ip, "ip")
-        anon_res = rec("Tor/Proxy", query_anonymity_proxy_ip(ip), ip, "ip")
-        spur_res = rec("Spur", query_spur_ip(ip), ip, "ip")
-        pdns_res = rec("Passive DNS", query_passive_dns(ip), ip, "ip")
-        gn_res = rec("GreyNoise", query_greynoise_ip(ip), ip, "ip")
-        shodan_res = rec("Shodan", query_shodan_ip(ip), ip, "ip")
-        censys_res = rec("Censys", query_censys_ip(ip), ip, "ip")
-        ss_ip_res = rec("Shadowserver", query_shadowserver_ip(ip), ip, "ip")
-        threatfox_res = rec("ThreatFox", query_threatfox(ip), ip, "ip")
-        misp_res = rec("MISP", query_misp_indicator(ip), ip, "ip")
+        tasks = {
+            "geoip": ("GeoIP", lambda: query_geoip_ip(ip)),
+            "rdap": ("RDAP", lambda: query_rdap_ip(ip)),
+            "vt": ("VirusTotal", lambda: query_vt_ip(ip)),
+            "otx": ("OTX", lambda: query_otx_ip(ip)),
+            "feodo": ("Feodo", lambda: query_feodotracker_ip(ip)),
+            "abuseipdb": ("AbuseIPDB", lambda: query_abuseipdb_ip(ip)),
+            "anon": ("Tor/Proxy", lambda: query_anonymity_proxy_ip(ip)),
+            "spur": ("Spur", lambda: query_spur_ip(ip)),
+            "pdns": ("Passive DNS", lambda: query_passive_dns(ip)),
+            "gn": ("GreyNoise", lambda: query_greynoise_ip(ip)),
+            "shodan": ("Shodan", lambda: query_shodan_ip(ip)),
+            "censys": ("Censys", lambda: query_censys_ip(ip)),
+            "ss": ("Shadowserver", lambda: query_shadowserver_ip(ip)),
+            "tf": ("ThreatFox", lambda: query_threatfox(ip)),
+            "misp": ("MISP", lambda: query_misp_indicator(ip)),
+        }
+        with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
+            futures = {
+                key: pool.submit(_query_provider_bounded, rec, service, fn, ip, "ip") for key, (service, fn) in tasks.items()
+            }
+            geoip_res = futures["geoip"].result()
+            rdap_ip_res = futures["rdap"].result()
+            vt_res = futures["vt"].result()
+            otx_res = futures["otx"].result()
+            feodo_res = futures["feodo"].result()
+            abuseipdb_res = futures["abuseipdb"].result()
+            anon_res = futures["anon"].result()
+            spur_res = futures["spur"].result()
+            pdns_res = futures["pdns"].result()
+            gn_res = futures["gn"].result()
+            shodan_res = futures["shodan"].result()
+            censys_res = futures["censys"].result()
+            ss_ip_res = futures["ss"].result()
+            threatfox_res = futures["tf"].result()
+            misp_res = futures["misp"].result()
+
         lines = [
             f"- **IP {ip}**:\n"
             f"  - *GeoIP:* {geoip_res}\n"
@@ -676,15 +749,32 @@ def _generate_enrichment_summary_body(
         return "\n".join(lines)
 
     def process_domain(d: str) -> str:
-        vt_res = rec("VirusTotal", query_vt_domain(d), d, "domain")
-        otx_res = rec("OTX", query_otx_domain(d), d, "domain")
-        rdap_res = rec("RDAP", query_rdap_domain(d), d, "domain")
-        urlscan_res = rec("URLScan", query_urlscan_domain(d), d, "domain")
-        crtsh_res = rec("crt.sh", query_crtsh_domain(d), d, "domain")
-        pdns_res = rec("Passive DNS", query_passive_dns(d), d, "domain")
-        urlhaus_res = rec("URLhaus", query_urlhaus_host(d), d, "domain")
-        threatfox_res = rec("ThreatFox", query_threatfox(d), d, "domain")
-        misp_res = rec("MISP", query_misp_indicator(d), d, "domain")
+        tasks = {
+            "vt": ("VirusTotal", lambda: query_vt_domain(d)),
+            "otx": ("OTX", lambda: query_otx_domain(d)),
+            "rdap": ("RDAP", lambda: query_rdap_domain(d)),
+            "urlscan": ("URLScan", lambda: query_urlscan_domain(d)),
+            "crtsh": ("crt.sh", lambda: query_crtsh_domain(d)),
+            "pdns": ("Passive DNS", lambda: query_passive_dns(d)),
+            "urlhaus": ("URLhaus", lambda: query_urlhaus_host(d)),
+            "tf": ("ThreatFox", lambda: query_threatfox(d)),
+            "misp": ("MISP", lambda: query_misp_indicator(d)),
+        }
+        with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
+            futures = {
+                key: pool.submit(_query_provider_bounded, rec, service, fn, d, "domain")
+                for key, (service, fn) in tasks.items()
+            }
+            vt_res = futures["vt"].result()
+            otx_res = futures["otx"].result()
+            rdap_res = futures["rdap"].result()
+            urlscan_res = futures["urlscan"].result()
+            crtsh_res = futures["crtsh"].result()
+            pdns_res = futures["pdns"].result()
+            urlhaus_res = futures["urlhaus"].result()
+            threatfox_res = futures["tf"].result()
+            misp_res = futures["misp"].result()
+
         lines = [f"- **Domain {d}**:\n  - *VirusTotal:* {vt_res}\n  - *OTX:* {otx_res}\n  - *RDAP (domain):* {rdap_res}"]
         if not urlscan_res.startswith("Not indexed on URLScan"):
             lines.append(f"  - *URLScan:* {urlscan_res}")
@@ -699,10 +789,21 @@ def _generate_enrichment_summary_body(
         return "\n".join(lines)
 
     def process_url(u: str) -> str:
-        urlscan_res = rec("URLScan", query_urlscan_url(u), u, "url")
-        urlhaus_res = rec("URLhaus", query_urlhaus_url(u), u, "url")
-        threatfox_res = rec("ThreatFox", query_threatfox(u), u, "url")
-        misp_res = rec("MISP", query_misp_indicator(u), u, "url")
+        tasks = {
+            "urlscan": ("URLScan", lambda: query_urlscan_url(u)),
+            "urlhaus": ("URLhaus", lambda: query_urlhaus_url(u)),
+            "tf": ("ThreatFox", lambda: query_threatfox(u)),
+            "misp": ("MISP", lambda: query_misp_indicator(u)),
+        }
+        with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
+            futures = {
+                key: pool.submit(_query_provider_bounded, rec, service, fn, u, "url") for key, (service, fn) in tasks.items()
+            }
+            urlscan_res = futures["urlscan"].result()
+            urlhaus_res = futures["urlhaus"].result()
+            threatfox_res = futures["tf"].result()
+            misp_res = futures["misp"].result()
+
         return (
             f"- **URL {u}**:\n"
             f"  - *URLScan:* {urlscan_res}\n"
@@ -749,14 +850,28 @@ def _generate_enrichment_summary_body(
     cve_list = indicators.get("cves", [])[:5]
     if cve_list:
         epss_batch = query_epss_batch(cve_list)
-        for cve in cve_list:
+
+        def process_cve(cve: str) -> str:
             epss_res = rec("EPSS", epss_batch.get(cve, "No EPSS score published."), cve, "cve")
-            otx_res = rec("OTX", query_otx_cve(cve), cve, "cve")
-            misp_res = rec("MISP", query_misp_indicator(cve), cve, "cve")
-            osv_res = rec("OSV.dev", query_osv_vuln(cve), cve, "cve")
-            vulncheck_res = rec("VulnCheck", query_vulncheck_cve(cve), cve, "cve")
-            msrc_res = rec("MSRC", query_msrc_cve(cve), cve, "cve")
-            summary.append(
+            tasks = {
+                "otx": ("OTX", lambda: query_otx_cve(cve)),
+                "misp": ("MISP", lambda: query_misp_indicator(cve)),
+                "osv": ("OSV.dev", lambda: query_osv_vuln(cve)),
+                "vulncheck": ("VulnCheck", lambda: query_vulncheck_cve(cve)),
+                "msrc": ("MSRC", lambda: query_msrc_cve(cve)),
+            }
+            with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
+                futures = {
+                    key: pool.submit(_query_provider_bounded, rec, service, fn, cve, "cve")
+                    for key, (service, fn) in tasks.items()
+                }
+                otx_res = futures["otx"].result()
+                misp_res = futures["misp"].result()
+                osv_res = futures["osv"].result()
+                vulncheck_res = futures["vulncheck"].result()
+                msrc_res = futures["msrc"].result()
+
+            return (
                 f"- **Vulnerability {cve}**:\n"
                 f"  - *EPSS:* {epss_res}\n"
                 f"  - *VulnCheck:* {vulncheck_res}\n"
@@ -765,6 +880,15 @@ def _generate_enrichment_summary_body(
                 f"  - *OTX:* {otx_res}\n"
                 f"  - *MISP:* {misp_res}"
             )
+
+        with ThreadPoolExecutor(max_workers=min(len(cve_list), 5)) as cve_pool:
+            cve_futures = {cve_pool.submit(process_cve, cve): cve for cve in cve_list}
+            cve_results = {f: f.result() for f in cve_futures}
+            for cve in cve_list:
+                for f, res in cve_results.items():
+                    if cve_futures[f] == cve:
+                        summary.append(res)
+                        break
 
     final_output = ""
     if len(summary) > 1:
