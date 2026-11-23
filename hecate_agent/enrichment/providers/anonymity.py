@@ -22,28 +22,10 @@ def _setting(name: str, default: str = "") -> str:
     return enrichment._setting(name, default)
 
 
-def _misp_verify_tls() -> bool:
-    from hecate_agent.orchestrator import enrichment
-
-    return enrichment._misp_verify_tls()
-
-
 def refang(value: str) -> str:
     from hecate_agent.orchestrator import enrichment
 
     return enrichment.refang(value)
-
-
-def _get_apex_domain(domain: str) -> str:
-    from hecate_agent.orchestrator import enrichment
-
-    return enrichment._get_apex_domain(domain)
-
-
-def _get_known_publishers() -> Set[str]:
-    from hecate_agent.orchestrator import enrichment
-
-    return getattr(enrichment, "_KNOWN_PUBLISHER_DOMAINS", set())
 
 
 _TOR_EXIT_CACHE: Dict[str, Any] = {"data": set(), "ts": 0.0}
@@ -85,16 +67,6 @@ def is_tor_exit_node(ip: str) -> bool:
     if not clean_ip:
         return False
     return clean_ip in _get_tor_exit_nodes()
-
-
-def query_tor_exit(ip: str) -> str:
-    """Query whether an IP is an active Tor exit node."""
-    clean_ip = refang(ip).strip()
-    if not clean_ip:
-        return report("Invalid IP address.", "skipped")
-    if is_tor_exit_node(clean_ip):
-        return report("Tor Exit Node: Confirmed Active Exit Node [Tor Project consensus]", "found")
-    return report("Not a Tor exit node.", "missing")
 
 
 _IPINFO_CACHE: Dict[str, Tuple[float, str, Dict[str, Any]]] = {}
@@ -165,11 +137,6 @@ def query_ipinfo_ip(ip: str) -> str:
     if cached and cached[1] and (now - cached[0] < _IPINFO_CACHE_TTL):
         return report(cached[1])
 
-    org = data.get("org") or ""
-    hostname = data.get("hostname") or ""
-    city = data.get("city")
-    region = data.get("region")
-    country = data.get("country")
     anycast = data.get("anycast", False)
     privacy = data.get("privacy") or {}
     company = data.get("company") or {}
@@ -195,17 +162,6 @@ def query_ipinfo_ip(ip: str) -> str:
     parts = []
     if tags:
         parts.append(f"Classification: {', '.join(tags)}")
-    elif is_hosting:
-        parts.append("Classification: Hosting/Datacenter")
-
-    if org:
-        parts.append(f"Org: {org}")
-    if hostname and not hostname.endswith(".in-addr.arpa"):
-        parts.append(f"Host: {hostname}")
-
-    loc_parts = [p for p in (city, region, country) if p]
-    if loc_parts:
-        parts.append(f"Loc: {', '.join(loc_parts)}")
 
     summary = " | ".join(parts) if parts else "Benign ISP / Non-proxy."
     _IPINFO_CACHE[clean_ip] = (now, summary, data)
@@ -239,6 +195,7 @@ def query_anonymity_proxy_ip(ip: str) -> str:
         and not ipinfo_str.startswith("Error")
         and not ipinfo_str.startswith("IPinfo HTTP")
         and not ipinfo_str.startswith("Private")
+        and not (tor_active and ipinfo_str == "Benign ISP / Non-proxy.")
     ):
         items.append(ipinfo_str)
         sources.add("IPinfo")

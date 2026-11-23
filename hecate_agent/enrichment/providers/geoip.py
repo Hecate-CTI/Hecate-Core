@@ -3,38 +3,16 @@
 from __future__ import annotations
 
 import ipaddress
-import logging
 import time
-from typing import Any, Dict, Set
+from typing import Any, Dict
 
 from hecate_agent.enrichment.result import report
-
-
-logger = logging.getLogger(__name__)
-
-
-def _setting(name: str, default: str = "") -> str:
-    from hecate_agent.orchestrator import enrichment
-
-    return enrichment._setting(name, default)
 
 
 def refang(value: str) -> str:
     from hecate_agent.orchestrator import enrichment
 
     return enrichment.refang(value)
-
-
-def _get_apex_domain(domain: str) -> str:
-    from hecate_agent.orchestrator import enrichment
-
-    return enrichment._get_apex_domain(domain)
-
-
-def _get_known_publishers() -> Set[str]:
-    from hecate_agent.orchestrator import enrichment
-
-    return getattr(enrichment, "_KNOWN_PUBLISHER_DOMAINS", set())
 
 
 def query_geoip_ip(ip: str) -> str:
@@ -83,8 +61,6 @@ def query_geoip_ip(ip: str) -> str:
     loc_parts = [p for p in (city, region, country) if p]
     if loc_parts:
         parts.append(f"Loc: {', '.join(loc_parts)}")
-    elif country:
-        parts.append(f"Country: {country}")
     if loc:
         parts.append(f"Coords: {loc}")
     if timezone:

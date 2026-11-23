@@ -5,27 +5,11 @@ from __future__ import annotations
 from hecate_agent.enrichment.result import report
 
 import ipaddress
-import logging
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional, Set, cast
+from typing import Any, Dict, Iterable, List, Optional, cast
 
 import httpx
-
-
-logger = logging.getLogger(__name__)
-
-
-def _setting(name: str, default: str = "") -> str:
-    from hecate_agent.orchestrator import enrichment
-
-    return enrichment._setting(name, default)
-
-
-def _misp_verify_tls() -> bool:
-    from hecate_agent.orchestrator import enrichment
-
-    return enrichment._misp_verify_tls()
 
 
 def refang(value: str) -> str:
@@ -38,12 +22,6 @@ def _get_apex_domain(domain: str) -> str:
     from hecate_agent.orchestrator import enrichment
 
     return enrichment._get_apex_domain(domain)
-
-
-def _get_known_publishers() -> Set[str]:
-    from hecate_agent.orchestrator import enrichment
-
-    return getattr(enrichment, "_KNOWN_PUBLISHER_DOMAINS", set())
 
 
 def _format_rdap_date(date_str: str) -> str:

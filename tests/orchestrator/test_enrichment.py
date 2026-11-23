@@ -29,7 +29,6 @@ from hecate_agent.orchestrator.enrichment import (
     query_passive_dns,
     query_passive_dns_domain,
     query_spur_ip,
-    query_tor_exit,
     query_urlscan_domain,
     query_urlscan_url,
     query_vt_hash,
@@ -1843,9 +1842,6 @@ def test_tor_exit_node_parsing_and_lookup():
         assert is_tor_exit_node("171.25.193.25") is True
         assert is_tor_exit_node("1.1.1.1") is False
 
-        assert "Confirmed Active Exit Node" in query_tor_exit("171.25.193.25")
-        assert "Not a Tor exit node" in query_tor_exit("1.1.1.1")
-
 
 def test_ipinfo_parsing_and_classification():
     _IPINFO_CACHE.clear()
@@ -1878,10 +1874,7 @@ def test_ipinfo_parsing_and_classification():
 
     with patch("httpx.get", return_value=mock_resp):
         res = query_ipinfo_ip("185.220.101.5")
-        assert "Classification: Tor, VPN (Mullvad), Hosting/Datacenter" in res
-        assert "Org: AS24940 Hetzner Online GmbH" in res
-        assert "Host: tor-exit-01.relays.net" in res
-        assert "Loc: Frankfurt, Hesse, DE" in res
+        assert res == "Classification: Tor, VPN (Mullvad), Hosting/Datacenter"
 
         raw = extract_ipinfo_context("185.220.101.5")
         assert raw["configured"] is True
@@ -1901,14 +1894,17 @@ def test_query_anonymity_proxy_ip_unified():
         "city": "Stockholm",
         "country": "SE",
         "org": "AS198093 DFRI",
+        "privacy": {
+            "tor": True,
+        },
     }
 
     with patch("httpx.get", return_value=mock_resp):
         res = query_anonymity_proxy_ip("171.25.193.25")
         assert "Tor Exit Node (Active)" in res
-        assert "Org: AS198093 DFRI" in res
-        assert "Host: tor-node.dfri.se" in res
-        assert "via IPinfo" in res or "Tor Project" in res
+        assert "Classification: Tor" in res
+        assert "Tor Project" in res
+        assert "IPinfo" in res
 
 
 def test_generate_enrichment_summary_includes_anonymity_proxy():
