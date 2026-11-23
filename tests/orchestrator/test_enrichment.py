@@ -2355,6 +2355,7 @@ def test_concurrent_readers_coordinate_blocklist_refreshes():
 
     sslbl_call_count = 0
     sslbl_lock = threading.Lock()
+    mock_sha1 = "a" * 40
 
     def mock_sslbl_get(*args, **kwargs):
         nonlocal sslbl_call_count
@@ -2363,7 +2364,7 @@ def test_concurrent_readers_coordinate_blocklist_refreshes():
         time.sleep(0.02)
         resp = MagicMock()
         resp.status_code = 200
-        resp.text = "2024-01-01,abcdef1234567890abcdef1234567890abcdef12,Dridex C2\n"
+        resp.text = f"2024-01-01,{mock_sha1},Dridex C2\n"
         return resp
 
     with patch("hecate_agent.enrichment.providers.threat_intel_feeds.httpx.get", side_effect=mock_sslbl_get):
@@ -2374,7 +2375,7 @@ def test_concurrent_readers_coordinate_blocklist_refreshes():
         # 1 call for sslblacklist.csv, 1 call for ja3_fingerprints.csv
         assert sslbl_call_count == 2
         for res in results:
-            assert "abcdef1234567890abcdef1234567890abcdef12" in res
+            assert mock_sha1 in res
 
 
 def test_provider_bounded_concurrency():
