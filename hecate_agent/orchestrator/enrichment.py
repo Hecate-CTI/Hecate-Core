@@ -25,7 +25,6 @@ from hecate_agent.enrichment.providers.virustotal import (
     query_vt_pdns_ip,
 )
 from hecate_agent.enrichment.providers.rdap import (
-    _format_rdap_date,
     query_rdap_domain,
     query_rdap_ip,
 )
@@ -72,7 +71,6 @@ from hecate_agent.enrichment.providers.anonymity import (
     _TOR_EXIT_TTL,
     _get_tor_exit_nodes,
     is_tor_exit_node,
-    query_tor_exit,
     _IPINFO_CACHE,
     _IPINFO_CACHE_TTL,
     extract_ipinfo_context,
@@ -154,7 +152,6 @@ __all__ = [
     "query_vt_domain",
     "query_vt_pdns_domain",
     "query_vt_pdns_ip",
-    "_format_rdap_date",
     "query_rdap_domain",
     "query_rdap_ip",
     "query_geoip_ip",
@@ -183,7 +180,6 @@ __all__ = [
     "_TOR_EXIT_TTL",
     "_get_tor_exit_nodes",
     "is_tor_exit_node",
-    "query_tor_exit",
     "_IPINFO_CACHE",
     "_IPINFO_CACHE_TTL",
     "extract_ipinfo_context",
