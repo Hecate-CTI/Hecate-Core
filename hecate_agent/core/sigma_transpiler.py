@@ -85,6 +85,7 @@ _ELASTIC_PROXY_MAPPING: Dict[str, str] = {
     "cs-uri-stem": "url.path",
     "cs-uri-query": "url.query",
     "c-ip": "source.ip",
+    "c-uri": "url.original",
     "DestinationIp": "destination.ip",
     "DestinationPort": "destination.port",
 }
@@ -517,11 +518,11 @@ class SigmaTranspiler:
                             "an explicit direction mapping is required"
                         )
                     elif any(":" in str(getattr(value, "cidr", "")) for value in item.value):
-                        raise ValueError(
-                            "Kusto backend uses IPv4 CIDR functions and cannot preserve IPv6 CIDRs"
-                        )
+                        raise ValueError("Kusto backend uses IPv4 CIDR functions and cannot preserve IPv6 CIDRs")
             if col.rules and col.rules[0].logsource.category in {"proxy", "webserver", "web", "apache", "nginx", "iis"}:
-                raise ValueError("HTTP KQL requires an explicit deployed table and field mapping; generic Sigma field names must not become quoted string constants")
+                raise ValueError(
+                    "HTTP KQL requires an explicit deployed table and field mapping; generic Sigma field names must not become quoted string constants"
+                )
             if col.rules and col.rules[0].logsource.category == "dns_query":
                 # DNS is a Sentinel ASIM signal, not a generic DeviceEvents
                 # field. Preserve the condition AST while mapping only fields
@@ -534,15 +535,13 @@ class SigmaTranspiler:
                         if hasattr(item, "detection_items"):
                             pending.extend(item.detection_items)
                         elif item.field != "QueryName":
-                            raise ValueError(
-                                f"Sentinel ASIM DNS mapping does not support field {item.field!r}"
-                            )
+                            raise ValueError(f"Sentinel ASIM DNS mapping does not support field {item.field!r}")
                 kusto_backend = _get_or_create_backend(
                     "mde_asim_dns",
                     lambda: KustoBackend(
-                        processing_pipeline=ProcessingPipeline(items=[ProcessingItem(
-                            transformation=FieldMappingTransformation({"QueryName": "DnsQuery"})
-                        )])
+                        processing_pipeline=ProcessingPipeline(
+                            items=[ProcessingItem(transformation=FieldMappingTransformation({"QueryName": "DnsQuery"}))]
+                        )
                     ),
                 )
                 queries = kusto_backend.convert(col)
@@ -583,9 +582,7 @@ class SigmaTranspiler:
                 if "Unable to determine table name" in str(k_err):
                     fallback_backend: Any = _get_or_create_backend(
                         "mde_table_DeviceEvents",
-                        lambda: KustoBackend(
-                            processing_pipeline=microsoft_365_defender_pipeline(query_table="DeviceEvents")
-                        ),
+                        lambda: KustoBackend(processing_pipeline=microsoft_365_defender_pipeline(query_table="DeviceEvents")),
                     )
                     queries = fallback_backend.convert(col)
                 else:
@@ -646,12 +643,16 @@ class SigmaTranspiler:
                         if hasattr(item, "detection_items"):
                             pending.extend(item.detection_items)
                         elif item.field not in _ELASTIC_PROXY_MAPPING:
-                            raise ValueError(f"{col.rules[0].logsource.category.title()} ECS mapping does not support field {item.field!r}")
+                            raise ValueError(
+                                f"{col.rules[0].logsource.category.title()} ECS mapping does not support field {item.field!r}"
+                            )
                 es_backend: Any = _get_or_create_backend(
                     "elastic_proxy_webserver",
-                    lambda: EqlBackend(processing_pipeline=ProcessingPipeline(items=[ProcessingItem(
-                        transformation=FieldMappingTransformation(_ELASTIC_PROXY_MAPPING)
-                    )])),
+                    lambda: EqlBackend(
+                        processing_pipeline=ProcessingPipeline(
+                            items=[ProcessingItem(transformation=FieldMappingTransformation(_ELASTIC_PROXY_MAPPING))]
+                        )
+                    ),
                 )
             elif col.rules and col.rules[0].logsource.product == "linux":
                 # ecs_windows() leaves Linux Sigma fields unchanged. Use ECS
@@ -667,9 +668,11 @@ class SigmaTranspiler:
                             raise ValueError(f"Linux ECS mapping does not support field {item.field!r}")
                 es_backend = _get_or_create_backend(
                     "elastic_linux",
-                    lambda: EqlBackend(processing_pipeline=ProcessingPipeline(items=[ProcessingItem(
-                        transformation=FieldMappingTransformation(_ELASTIC_LINUX_MAPPING)
-                    )])),
+                    lambda: EqlBackend(
+                        processing_pipeline=ProcessingPipeline(
+                            items=[ProcessingItem(transformation=FieldMappingTransformation(_ELASTIC_LINUX_MAPPING))]
+                        )
+                    ),
                 )
             else:
                 es_backend = _get_or_create_backend(
