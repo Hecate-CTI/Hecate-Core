@@ -263,11 +263,11 @@ def test_generate_enrichment_summary(mock_post, mock_get):
     assert "IP 8.8.8.8" in summary
     assert "Domain c2.evil.xyz" in summary
     assert "Vulnerability CVE-2023-1234" in summary
-    assert "FIRST EPSS (Exploit Prediction)" in summary
-    assert "OSV.dev (Open Source Supply Chain)" in summary
+    assert "*EPSS:*" in summary
+    assert "*OSV.dev:*" in summary
     assert "pkg-xyz" in summary
-    assert "AlienVault OTX" in summary
-    assert "Hybrid Analysis (Falcon Sandbox)" in summary
+    assert "*OTX:*" in summary
+    assert "*Hybrid Analysis:*" in summary
     assert "Mirai C2 Infrastructure" in summary
     assert "92.50%" in summary
     assert "CRITICAL EXPLOIT PROBABILITY" in summary
@@ -480,7 +480,7 @@ def test_query_abuseipdb_ip(monkeypatch):
 def test_query_rdap_domain():
     from hecate_agent.orchestrator.enrichment import query_rdap_domain
 
-    with patch("hecate_agent.orchestrator.enrichment.httpx.get") as mock_get:
+    with patch("hecate_agent.enrichment.providers.rdap.httpx.get") as mock_get:
         mock_resp = MagicMock(status_code=200)
         mock_resp.json.return_value = {
             "events": [
@@ -498,6 +498,166 @@ def test_query_rdap_domain():
         mock_resp_404 = MagicMock(status_code=404)
         mock_get.return_value = mock_resp_404
         assert "Domain not found on RDAP." in query_rdap_domain("unknown-domain.xyz")
+
+
+def test_query_rdap_ip():
+    from hecate_agent.orchestrator.enrichment import query_rdap_ip
+
+    assert query_rdap_ip("10.0.0.1") == "Private/internal IP address."
+    assert query_rdap_ip("127.0.0.1") == "Private/internal IP address."
+    assert query_rdap_ip("169.254.1.1") == "Private/internal IP address."
+    assert query_rdap_ip("224.0.0.1") == "Private/internal IP address."
+    assert query_rdap_ip("::1") == "Private/internal IP address."
+    assert "Invalid" in query_rdap_ip("not-an-ip")
+    assert "Invalid" in query_rdap_ip("")
+
+    with patch("hecate_agent.enrichment.providers.rdap.httpx.get") as mock_get:
+        mock_resp = MagicMock(status_code=200)
+        mock_resp.json.return_value = {
+            "name": "GOGL",
+            "handle": "NET-8-8-8-0-2",
+            "type": "DIRECT ALLOCATION",
+            "startAddress": "8.8.8.0",
+            "endAddress": "8.8.8.255",
+            "cidr0_cidrs": [{"v4prefix": "8.8.8.0", "length": 24}],
+            "events": [{"eventAction": "registration", "eventDate": "2023-12-28T17:24:33-05:00"}],
+            "entities": [
+                {
+                    "roles": ["registrant"],
+                    "handle": "GOGL",
+                    "vcardArray": ["vcard", [["fn", {}, "text", "Google LLC"]]],
+                    "entities": [
+                        {
+                            "roles": ["abuse"],
+                            "handle": "ABUSE5250-ARIN",
+                            "vcardArray": ["vcard", [["fn", {}, "text", "Abuse"]]],
+                        }
+                    ],
+                }
+            ],
+        }
+        mock_get.return_value = mock_resp
+        res = query_rdap_ip("8.8.8.8")
+        assert "Net: GOGL" in res
+        assert "CIDR: 8.8.8.0/24" in res
+        assert "Org: Google LLC" in res
+        assert "Type: DIRECT ALLOCATION" in res
+        assert "Registered: 2023-12-28" in res
+
+        # RIPE-style: range only, country + origin ASN; prefer org registrant over -MNT
+        mock_resp.json.return_value = {
+            "handle": "185.220.101.0 - 185.220.101.31",
+            "name": "ARTIKEL10",
+            "startAddress": "185.220.101.0",
+            "endAddress": "185.220.101.31",
+            "country": "DE",
+            "type": "ASSIGNED PA",
+            "cidr0_cidrs": [{"v4prefix": "185.220.101.0", "length": 27}],
+            "originAutnums": [60729],
+            "entities": [
+                {
+                    "roles": ["registrant"],
+                    "handle": "ARTIKEL10-MNT",
+                    "vcardArray": [
+                        "vcard",
+                        [["fn", {}, "text", "ARTIKEL10-MNT"], ["kind", {}, "text", "individual"]],
+                    ],
+                },
+                {
+                    "roles": ["registrant"],
+                    "handle": "ORG-AE101-RIPE",
+                    "vcardArray": [
+                        "vcard",
+                        [["fn", {}, "text", "Artikel10 e.V."], ["kind", {}, "text", "org"]],
+                    ],
+                },
+            ],
+        }
+        res = query_rdap_ip("185.220.101.5")
+        assert "Net: ARTIKEL10" in res
+        assert "CIDR: 185.220.101.0/27" in res
+        assert "Country: DE" in res
+        assert "Org: Artikel10 e.V." in res
+        assert "ARTIKEL10-MNT" not in res.split("Org:")[-1]
+        assert "Origin ASN: AS60729" in res
+        assert "Type: ASSIGNED PA" in res
+
+        mock_get.return_value = MagicMock(status_code=404)
+        assert "IP not found on RDAP." in query_rdap_ip("1.2.3.4")
+
+        mock_get.return_value = MagicMock(status_code=503)
+        assert "RDAP error: HTTP 503" in query_rdap_ip("1.2.3.4")
+
+        mock_get.side_effect = Exception("timeout")
+        assert "Error querying RDAP: timeout" in query_rdap_ip("1.2.3.4")
+
+
+def test_query_geoip_ip():
+    from hecate_agent.orchestrator.enrichment import query_geoip_ip
+
+    _IPINFO_CACHE.clear()
+    assert query_geoip_ip("192.168.1.1") == "Private/internal IP address."
+    assert query_geoip_ip("127.0.0.1") == "Private/internal IP address."
+    assert query_geoip_ip("169.254.1.1") == "Private/internal IP address."
+    assert query_geoip_ip("224.0.0.1") == "Private/internal IP address."
+    assert query_geoip_ip("::1") == "Private/internal IP address."
+    assert "Invalid" in query_geoip_ip("not-an-ip")
+    assert "Invalid" in query_geoip_ip("")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "ip": "185.220.101.5",
+        "hostname": "tor-exit-01.relays.net",
+        "city": "Frankfurt",
+        "region": "Hesse",
+        "country": "DE",
+        "loc": "50.1109,8.6821",
+        "timezone": "Europe/Berlin",
+        "org": "AS24940 Hetzner Online GmbH",
+        "anycast": False,
+    }
+
+    with patch("hecate_agent.enrichment.providers.anonymity.httpx.get", return_value=mock_resp):
+        res = query_geoip_ip("185.220.101.5")
+        assert "Loc: Frankfurt, Hesse, DE" in res
+        assert "Coords: 50.1109,8.6821" in res
+        assert "TZ: Europe/Berlin" in res
+        assert "ASN/Org: AS24940 Hetzner Online GmbH" in res
+        assert "Host: tor-exit-01.relays.net" in res
+
+        # Defanged observable
+        _IPINFO_CACHE.clear()
+        res = query_geoip_ip("185.220.101[.]5")
+        assert "Loc: Frankfurt, Hesse, DE" in res
+
+    _IPINFO_CACHE.clear()
+    with patch(
+        "hecate_agent.enrichment.providers.anonymity.httpx.get",
+        return_value=MagicMock(status_code=429),
+    ):
+        assert "rate limit" in query_geoip_ip("1.1.1.1").lower()
+
+    _IPINFO_CACHE.clear()
+    with patch(
+        "hecate_agent.enrichment.providers.anonymity.httpx.get",
+        return_value=MagicMock(status_code=404),
+    ):
+        assert "Not found on IPinfo" in query_geoip_ip("1.1.1.1")
+
+    _IPINFO_CACHE.clear()
+    anycast_resp = MagicMock(status_code=200)
+    anycast_resp.json.return_value = {
+        "ip": "1.1.1.1",
+        "country": "AU",
+        "org": "AS13335 Cloudflare, Inc.",
+        "anycast": True,
+    }
+    with patch("hecate_agent.enrichment.providers.anonymity.httpx.get", return_value=anycast_resp):
+        res = query_geoip_ip("1.1.1.1")
+        assert "Country: AU" in res or "Loc:" in res
+        assert "ASN/Org: AS13335 Cloudflare, Inc." in res
+        assert "Anycast" in res
 
 
 def test_query_epss():
@@ -1660,10 +1820,9 @@ def test_generate_enrichment_summary_includes_spur_and_pdns():
         ),
     ):
         summary = generate_enrichment_summary(threat_intel)
-        assert "Spur.us (Proxy & Infrastructure):" in summary
+        assert "*Spur:*" in summary
         assert "Infra: RESIDENTIAL" in summary
-        assert "Passive DNS (Historical Correlated Hostnames):" in summary
-        assert "Passive DNS (Historical IP Resolutions):" in summary
+        assert "*Passive DNS:*" in summary
 
 
 def test_tor_exit_node_parsing_and_lookup():
@@ -1763,9 +1922,30 @@ def test_generate_enrichment_summary_includes_anonymity_proxy():
         return_value="Tor Exit Node (Active) | Org: AS24940 [IPinfo, Tor Project]",
     ):
         summary = generate_enrichment_summary(threat_intel)
-        assert "Anonymity & Proxy (Tor / Hosting / VPN):" in summary
+        assert "*Tor/Proxy:*" in summary
         assert "Tor Exit Node (Active)" in summary
         assert "Org: AS24940" in summary
+
+
+def test_generate_enrichment_summary_includes_geoip_and_rdap_ip():
+    threat_intel = "Staging IP 185.220.101.5 observed in logs."
+
+    with (
+        patch(
+            "hecate_agent.orchestrator.enrichment.query_geoip_ip",
+            return_value="Loc: Frankfurt, Hesse, DE | ASN/Org: AS24940 Hetzner Online GmbH",
+        ),
+        patch(
+            "hecate_agent.orchestrator.enrichment.query_rdap_ip",
+            return_value="Net: DE-HETZNER | CIDR: 185.220.100.0/22 | Org: Hetzner Online GmbH",
+        ),
+    ):
+        summary = generate_enrichment_summary(threat_intel)
+        assert "*GeoIP:*" in summary
+        assert "Frankfurt, Hesse, DE" in summary
+        assert "*RDAP (IP):*" in summary
+        assert "DE-HETZNER" in summary
+        assert "Hetzner Online GmbH" in summary
 
 
 def test_query_triage_hash_no_key(monkeypatch):
@@ -1865,8 +2045,7 @@ def test_generate_enrichment_summary_includes_triage():
         return_value="Family: LummaC2 | Score: 10/10 | Extracted C2: 194.26.29.111",
     ):
         summary = generate_enrichment_summary(threat_intel)
-        assert "Hatching Triage" in summary
-        assert "Hatching Triage (tria.ge Sandbox):" in summary
+        assert "*Triage:*" in summary
         assert "Family: LummaC2" in summary
 
 
@@ -1941,7 +2120,7 @@ def test_generate_enrichment_summary_includes_vulncheck():
         ),
     ):
         summary = generate_enrichment_summary(threat_intel)
-        assert "VulnCheck KEV (Active Exploitation):" in summary
+        assert "*VulnCheck:*" in summary
         assert "Status: weaponized (in-the-wild: True)" in summary
 
 
@@ -2047,7 +2226,7 @@ def test_generate_enrichment_summary_includes_shadowserver():
         ),
     ):
         summary = generate_enrichment_summary(threat_intel)
-        assert "Shadowserver Foundation" in summary
+        assert "*Shadowserver:*" in summary
         assert "ASN: AS12345 (Adversary ASN)" in summary
         assert "AV Detections: 14 hits" in summary
 
@@ -2112,5 +2291,5 @@ def test_generate_enrichment_summary_includes_msrc():
         ),
     ):
         summary = generate_enrichment_summary(threat_intel)
-        assert "Microsoft MSRC (Security Guidance):" in summary
+        assert "*MSRC:*" in summary
         assert "MSRC: Windows TCP/IP RCE · Severity: Critical · CVSS: 9.8" in summary

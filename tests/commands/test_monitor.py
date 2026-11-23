@@ -323,7 +323,8 @@ def test_integrations_panel_shows_metrics_to_the_right_in_narrow_mode(tmp_path: 
     assert "SSLBL" in text and "0 queries" in text
     assert "URLhaus" in text and "0 queries" in text
     assert "Hybrid" in text and "--" in text
-    assert "RDAP" in text and "2 queries" in text
+    assert "RDAP" in text and "3 queries" in text  # 1 ip + 2 domain
+    assert "GeoIP" in text and "1 queries" in text
     assert "EPSS" in text and "0 CVEs" in text
     assert "OSV.dev" in text and "0 CVEs" in text
     assert "Slack" in text and "--" in text
@@ -371,6 +372,7 @@ def test_integrations_panel_shows_metrics_in_wide_mode(tmp_path: Path, monkeypat
         assert "URLhaus" in text and "0 queries" in text
         assert "Hybrid" in text and "0 queries" in text
         assert "RDAP" in text and "0 queries" in text
+        assert "GeoIP" in text and "0 queries" in text
         assert "EPSS" in text and "0 CVEs" in text
         assert "OSV.dev" in text and "0 CVEs" in text
         assert "ready" not in text
@@ -433,7 +435,8 @@ def test_integrations_panel_preserves_enrichment_metrics_across_idle_cycles(
     assert "SSLBL" in text and "1 queries" in text
     assert "URLhaus" in text and "1 queries" in text
     assert "Hybrid" in text and "1 queries" in text
-    assert "RDAP" in text and "1 queries" in text
+    assert "RDAP" in text and "3 queries" in text  # 2 ip + 1 domain
+    assert "GeoIP" in text and "2 queries" in text
     assert "EPSS" in text and "1 CVEs" in text
     assert "OSV.dev" in text and "1 CVEs" in text
     assert "Tavily" in text and "4 searches" in text
@@ -803,13 +806,9 @@ def test_purple_team_metrics_do_not_import_other_evaluation_workspaces(
     foreign_evals = tmp_path / "other-evaluations"
     foreign_hunts = foreign_evals / "old-run/hunts"
     foreign_hunts.mkdir(parents=True)
-    (foreign_hunts / "H-0001.md").write_text(
-        "purple_team_validated: true\npurple_team_rules_evaluated: 37\n"
-    )
+    (foreign_hunts / "H-0001.md").write_text("purple_team_validated: true\npurple_team_rules_evaluated: 37\n")
     if own_rules:
-        (workspace / "hunts/H-0001.md").write_text(
-            f"purple_team_validated: true\npurple_team_rules_evaluated: {own_rules}\n"
-        )
+        (workspace / "hunts/H-0001.md").write_text(f"purple_team_validated: true\npurple_team_rules_evaluated: {own_rules}\n")
     monkeypatch.setattr(m, "Path", lambda path: foreign_evals if str(path) == "/tmp/eval_runs" else Path(path))
     metrics = m._collect_purple_team_metrics(workspace)
     assert metrics.validated_rules == own_rules
@@ -1044,7 +1043,9 @@ def test_dashboard_wide_screen_bottom_ribbon() -> None:
 
 
 @pytest.mark.parametrize(("grid", "narrow"), [(True, True), (False, True), (False, False)])
-def test_integrations_color_reachable_disabled_purple(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, grid: bool, narrow: bool) -> None:
+def test_integrations_color_reachable_disabled_purple(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, grid: bool, narrow: bool
+) -> None:
     from datetime import timedelta, timezone
     import json
 
@@ -1054,16 +1055,24 @@ def test_integrations_color_reachable_disabled_purple(tmp_path: Path, monkeypatc
     health = tmp_path / ".hecate" / "integrations"
     health.mkdir(parents=True)
     now = datetime.now(timezone.utc)
-    for name, enabled, healthy, checked in [("lolbas", True, True, now), ("nuclei", True, False, now),
-                                    ("gtfobins", False, True, now), ("loldrivers", False, False, now),
-                                    ("attack_deltas", True, True, now - timedelta(hours=3)),
-                                    ("cisa_ics", False, True, now - timedelta(hours=3))]:
-        (health / f"{name}.json").write_text(json.dumps({"enabled": enabled, "healthy": healthy, "checked_at": checked.isoformat()}))
+    for name, enabled, healthy, checked in [
+        ("lolbas", True, True, now),
+        ("nuclei", True, False, now),
+        ("gtfobins", False, True, now),
+        ("loldrivers", False, False, now),
+        ("attack_deltas", True, True, now - timedelta(hours=3)),
+        ("cisa_ics", False, True, now - timedelta(hours=3)),
+    ]:
+        (health / f"{name}.json").write_text(
+            json.dumps({"enabled": enabled, "healthy": healthy, "checked_at": checked.isoformat()})
+        )
     panel = m._integrations_panel(tmp_path, grid=grid, narrow=narrow)
     console = Console(width=150, force_terminal=True, color_system="standard")
     segments = list(console.render(panel, console.options))
+
     def color_for(word: str) -> list[str]:
         return [str(segment.style) for segment in segments if word in segment.text]
+
     if grid:
         assert any("green" in style for style in color_for("LOLBAS"))
         assert any("magenta" in style for style in color_for("GTFOBins"))
@@ -1097,7 +1106,9 @@ def test_all_integration_rows_fit_the_wide_grid() -> None:
 
 @pytest.mark.parametrize(("grid", "narrow"), [(True, True), (False, True), (False, False)])
 @pytest.mark.parametrize("state", ["healthy", "failed", "stale"])
-def test_misp_output_only_is_pink_only_with_recent_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, grid: bool, narrow: bool, state: str) -> None:
+def test_misp_output_only_is_pink_only_with_recent_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, grid: bool, narrow: bool, state: str
+) -> None:
     monkeypatch.setenv("HECATE_RUNNER_CTI_PROVIDER", "multi")
     monkeypatch.setenv("HECATE_RUNNER_CTI_MULTI_PROVIDERS", "rss")
     monkeypatch.setenv("HECATE_RUNNER_MISP_PUBLISHING_ENABLED", "true")
@@ -1105,7 +1116,9 @@ def test_misp_output_only_is_pink_only_with_recent_success(tmp_path: Path, monke
     health = tmp_path / ".hecate/integrations"
     health.mkdir(parents=True)
     checked = datetime.now(timezone.utc) - (timedelta(hours=3) if state == "stale" else timedelta())
-    (health / "misp_output.json").write_text(json.dumps({"enabled": True, "healthy": state != "failed", "checked_at": checked.isoformat()}))
+    (health / "misp_output.json").write_text(
+        json.dumps({"enabled": True, "healthy": state != "failed", "checked_at": checked.isoformat()})
+    )
     console = Console(width=150, force_terminal=True, color_system="standard")
     segments = list(console.render(m._integrations_panel(tmp_path, grid=grid, narrow=narrow), console.options))
     if grid:
@@ -1116,12 +1129,16 @@ def test_misp_output_only_is_pink_only_with_recent_success(tmp_path: Path, monke
 
 
 @pytest.mark.parametrize("interactive", [False, True])
-def test_slack_color_distinguishes_notifications_from_interactive_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, interactive: bool) -> None:
+def test_slack_color_distinguishes_notifications_from_interactive_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, interactive: bool
+) -> None:
     monkeypatch.setenv("SLACK_BOT_TOKEN", "configured-bot-token")
     monkeypatch.setenv("HECATE_RUNNER_SLACK_INTERACTIVE_ENABLED", str(interactive).lower())
     health = tmp_path / ".hecate/integrations"
     health.mkdir(parents=True)
-    (health / "slack.json").write_text(json.dumps({"enabled": True, "healthy": True, "checked_at": datetime.now(timezone.utc).isoformat()}))
+    (health / "slack.json").write_text(
+        json.dumps({"enabled": True, "healthy": True, "checked_at": datetime.now(timezone.utc).isoformat()})
+    )
     console = Console(width=150, force_terminal=True, color_system="standard")
     segments = list(console.render(m._integrations_panel(tmp_path, grid=True), console.options))
     assert any(("green" if interactive else "#ff69b4") in str(s.style) for s in segments if s.text.strip() == "Slack")
@@ -1133,10 +1150,17 @@ def test_validation_reads_private_sensor_runs_and_deduplicates_hunt_results(tmp_
     state = {"enabled": True, "auto_execute_live": True, "telemetry": "lab_process"}
     (root / "state.json").write_text(json.dumps(state))
     record = {
-        "run_id": "run-1", "hunt_id": "H-0001", "provider": "caldera",
-        "status": "verified_true_positive", "technique_id": "T1033",
-        "telemetry_arrived": True, "rule_triggered": True, "sensor_events_count": 3,
-        "matched_events_count": 1, "cleanup_success": True, "fidelity_scope": "behavioral",
+        "run_id": "run-1",
+        "hunt_id": "H-0001",
+        "provider": "caldera",
+        "status": "verified_true_positive",
+        "technique_id": "T1033",
+        "telemetry_arrived": True,
+        "rule_triggered": True,
+        "sensor_events_count": 3,
+        "matched_events_count": 1,
+        "cleanup_success": True,
+        "fidelity_scope": "behavioral",
     }
     (root / "runs/one.json").write_text(json.dumps(record))
     hunts = tmp_path / "hunts"
@@ -1151,9 +1175,15 @@ def test_validation_reads_private_sensor_runs_and_deduplicates_hunt_results(tmp_
     assert metrics.bas_mode_label == "AUTO · approved Linux lab"
     assert metrics.bas_scope_label == "Local process sensor + Sigma"
     # A new runtime record invalidates the cache even when no hunt changed.
-    (root / "runs/two.json").write_text(json.dumps({
-        "run_id": "run-2", "status": "skipped", "reason": "No approved Linux procedure",
-    }))
+    (root / "runs/two.json").write_text(
+        json.dumps(
+            {
+                "run_id": "run-2",
+                "status": "skipped",
+                "reason": "No approved Linux procedure",
+            }
+        )
+    )
     metrics = m._collect_purple_team_metrics(tmp_path)
     assert metrics.bas_runs == 1 and metrics.bas_skipped == 1
     console = Console(width=100, record=True, force_terminal=False)
@@ -1168,12 +1198,18 @@ def test_validation_separates_simulation_query_and_smoke_from_live_alerts(tmp_pa
     runs = tmp_path / ".hecate/bas/runs"
     runs.mkdir(parents=True)
     live = {
-        "bas_provider": "caldera", "status": "verified_true_positive",
-        "fidelity_scope": "behavioral", "cleanup_success": True,
-        "rule_triggered": True, "telemetry_arrived": True,
-        "siem_backend": "splunk", "verification_scope": "siem_alert",
-        "siem_alert_fired": True, "alert_search_id": "alert-job-1",
-        "alert_name": "Example alert", "alert_time_utc": "2026-11-13T00:00:00Z",
+        "bas_provider": "caldera",
+        "status": "verified_true_positive",
+        "fidelity_scope": "behavioral",
+        "cleanup_success": True,
+        "rule_triggered": True,
+        "telemetry_arrived": True,
+        "siem_backend": "splunk",
+        "verification_scope": "siem_alert",
+        "siem_alert_fired": True,
+        "alert_search_id": "alert-job-1",
+        "alert_name": "Example alert",
+        "alert_time_utc": "2026-11-13T00:00:00Z",
         "detection_latency_sec": 2.0,
     }
     records = [
@@ -1242,15 +1278,25 @@ def test_validation_combines_rule_replay_and_bas_outcomes(tmp_path: Path) -> Non
 @pytest.mark.parametrize("width", [48, 60, 80])
 def test_detailed_mitre_has_one_row_per_enterprise_tactic(width: int) -> None:
     metrics = m.HuntsMetrics(
-        enterprise_ttps={"execution": 7, "credential-access": 3}, enterprise_total=10,
-        total_hunts=2, sigma_rules_count=4, ttps_count=10,
-        tactic_hunts={"enterprise": {"execution": 2}}, tactic_rules={"enterprise": {"execution": 4}},
+        enterprise_ttps={"execution": 7, "credential-access": 3},
+        enterprise_total=10,
+        total_hunts=2,
+        sigma_rules_count=4,
+        ttps_count=10,
+        tactic_hunts={"enterprise": {"execution": 2}},
+        tactic_rules={"enterprise": {"execution": 4}},
     )
     console = Console(width=width, record=True, force_terminal=False)
     console.print(m._mitre_metrics_panel(metrics=metrics, detailed=True))
     text = console.export_text()
     assert len(text.splitlines()) == m._DETAILED_MITRE_PANEL_HEIGHT
-    for label in ("Reconnaissance", "Resource Development", "Privilege Escalation", "Credential Access", "Command and Control"):
+    for label in (
+        "Reconnaissance",
+        "Resource Development",
+        "Privilege Escalation",
+        "Credential Access",
+        "Command and Control",
+    ):
         assert label in text
     execution = next(line for line in text.splitlines() if "Execution" in line)
     assert execution.split()[2:6] == ["7", "0", "2", "4"]
@@ -1267,7 +1313,9 @@ def test_wide_dashboard_swaps_observables_and_expands_mitre(monkeypatch: pytest.
     console = Console(width=220, height=65, record=True, force_terminal=False)
     monkeypatch.setattr(m, "console", console)
     runner = m.RunnerStatus(installed=True, service_state="inactive", workspace=Path("/nonexistent/workspace"))
-    console.print(m._render_dashboard(Path("/nonexistent/workspace"), _events("done: draft_created"), {}, _host(), START, runner, ""))
+    console.print(
+        m._render_dashboard(Path("/nonexistent/workspace"), _events("done: draft_created"), {}, _host(), START, runner, "")
+    )
     lines = console.export_text().splitlines()
     hunts = next(line for line in lines if "HUNTS" in line)
     mitre = next(line for line in lines if "MITRE" in line)
@@ -1283,7 +1331,8 @@ def mitre_test_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
 
     tactics = {"T1059.001": ["execution"], "T1059.003": ["execution"], "T1082": ["discovery"]}
     monkeypatch.setattr(
-        attack_matrix, "get_technique",
+        attack_matrix,
+        "get_technique",
         lambda technique: {"tactic_shortnames": tactics[technique]} if technique in tactics else None,
     )
 
@@ -1658,8 +1707,6 @@ def test_tab_nav_bar_supports_tab_5() -> None:
     assert "1: Overview" in text
 
 
-
-
 def test_siem_dashboard_requires_alert_proof_and_ignores_latency_snapshots(tmp_path: Path):
     import sqlite3
 
@@ -1682,12 +1729,33 @@ def test_siem_dashboard_requires_alert_proof_and_ignores_latency_snapshots(tmp_p
                 alert_time_utc TEXT, detection_latency_sec REAL);
         """)
         rows = [
-            (1, "H-0001", "T1033", "verified_true_positive", "caldera", "splunk", 1,
-             "alert-job", "Rule", "2026-11-13T00:00:00Z", 2.0),
-            (2, "H-0002", "T1033", "verified_true_positive", "mock", "splunk", 1,
-             "fake-job", "Rule", "2026-11-13T00:00:00Z", 888.0),
-            (3, "H-0003", "T1033", "verified_true_positive", "caldera", "lab_process", 0,
-             "", "", "", 777.0),
+            (
+                1,
+                "H-0001",
+                "T1033",
+                "verified_true_positive",
+                "caldera",
+                "splunk",
+                1,
+                "alert-job",
+                "Rule",
+                "2026-11-13T00:00:00Z",
+                2.0,
+            ),
+            (
+                2,
+                "H-0002",
+                "T1033",
+                "verified_true_positive",
+                "mock",
+                "splunk",
+                1,
+                "fake-job",
+                "Rule",
+                "2026-11-13T00:00:00Z",
+                888.0,
+            ),
+            (3, "H-0003", "T1033", "verified_true_positive", "caldera", "lab_process", 0, "", "", "", 777.0),
         ]
         conn.executemany("INSERT INTO detection_validations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
     metrics = m._collect_siem_drift_metrics(tmp_path)
@@ -1735,3 +1803,62 @@ def test_diagnose_state_access_permission_error(tmp_path: Path, monkeypatch):
     assert "Quota file unreadable" in reason
     assert "locked.json" in reason
 
+
+def test_collect_hunts_metrics_per_file_caching_and_incremental_refresh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import hecate_agent.commands.monitor_metrics as mm
+
+    clock = [1000.0]
+    monkeypatch.setattr(m.time, "monotonic", lambda: clock[0])
+    mm.clear_hunts_metrics_cache()
+
+    hunts_dir = tmp_path / "hunts" / "2026" / "Q4"
+    hunts_dir.mkdir(parents=True)
+    f1 = hunts_dir / "H-0001.md"
+    f2 = hunts_dir / "H-0002.md"
+    f3 = hunts_dir / "H-0003.md"
+
+    f1.write_text("---\nhunt_id: H-0001\ntitle: Hunt 1\nstatus: active\ntechniques: [T1059.001]\n---\n")
+    f2.write_text("---\nhunt_id: H-0002\ntitle: Hunt 2\nstatus: completed\ntechniques: [T1082]\n---\n")
+    f3.write_text("---\nhunt_id: H-0003\ntitle: Hunt 3\nstatus: planning\ntechniques: [T1105]\n---\n")
+
+    metrics1 = m._collect_hunts_metrics(tmp_path)
+    assert metrics1.total_hunts == 3
+    assert metrics1.active_count == 1
+    assert metrics1.completed_count == 1
+    assert metrics1.drafts_count == 1
+    assert metrics1.ttps_count == 3
+
+    # Track calls to _parse_single_hunt_file in monitor_metrics
+    import hecate_agent.commands.monitor_metrics as mm
+
+    orig_parse = mm._parse_single_hunt_file
+    parse_calls = []
+
+    def counting_parse(path):
+        parse_calls.append(path)
+        return orig_parse(path)
+
+    monkeypatch.setattr(mm, "_parse_single_hunt_file", counting_parse)
+
+    # Advance clock past the 10-second fast cache window
+    clock[0] += 20.0
+
+    # Modify ONLY f2 (e.g. change status to active and add a technique)
+    f2.write_text("---\nhunt_id: H-0002\ntitle: Hunt 2\nstatus: active\ntechniques: [T1082, T1218.011]\n---\n")
+
+    metrics2 = m._collect_hunts_metrics(tmp_path)
+    assert len(parse_calls) == 1
+    assert parse_calls[0] == f2
+    assert metrics2.active_count == 2
+    assert metrics2.completed_count == 0
+    assert metrics2.ttps_count == 4
+
+    # Delete f3 and advance clock
+    f3.unlink()
+    clock[0] += 20.0
+    parse_calls.clear()
+
+    metrics3 = m._collect_hunts_metrics(tmp_path)
+    assert len(parse_calls) == 0  # No files modified, only one removed
+    assert metrics3.total_hunts == 2
+    assert metrics3.drafts_count == 0

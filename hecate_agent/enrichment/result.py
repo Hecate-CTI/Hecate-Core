@@ -37,7 +37,7 @@ def classify_enrichment_result(result: str) -> str:
         return "skipped"
     if _UNCONFIGURED_RE.search(text):
         return "unconfigured"
-    if _MISSING_RE.match(text):
+    if _MISSING_RE.search(text):
         return "missing"
     if _ERROR_RE.search(text):
         return "errors"
@@ -131,17 +131,12 @@ def render_enrichment_citations(records: list[dict[str, Any]]) -> str:
             order.append(key)
             grouped[key] = []
         grouped[key].append(row)
-    lines = [
-        line
-        for key in order
-        if (line := _citation_line(key[0], key[1], grouped[key]))
-    ]
+    lines = [line for key in order if (line := _citation_line(key[0], key[1], grouped[key]))]
     if not lines:
         return ""
     return (
         "### Enrichment citations\n\n"
-        "Labels come from lookup outcomes. A provider that was not configured is not a miss.\n\n"
-        + "\n".join(lines)
+        "Labels come from lookup outcomes. A provider that was not configured is not a miss.\n\n" + "\n".join(lines)
     )
 
 
@@ -189,4 +184,3 @@ def _citation_line(kind: str, observable: str, rows: list[dict[str, Any]]) -> st
     elif unconfigured and not corroborated:
         tail.append(", ".join(unconfigured) + ".")
     return f"- **{kind}** `{observable}` — {label}" + (" " + " ".join(tail) if tail else "")
-

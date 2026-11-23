@@ -107,7 +107,7 @@ hecate_agent/
 │   └── splunk.py           # Optional Splunk integration (loaded conditionally)
 ├── enrichment/             # Modular CTI enrichment architecture
 │   ├── constants.py        # Shared normalization mappings, confidence scoring, timeouts
-│   └── providers/          # 17 pluggable OSINT/CTI provider modules (VT, Shodan, GreyNoise...)
+│   └── providers/          # OSINT/CTI providers (GeoIP, RDAP, VT, Shodan, GreyNoise, ...)
 ├── core/                   # Business logic layer
 │   ├── hunt_manager.py     # Hunt file discovery, lifecycle, stats, ATT&CK coverage; class-level cache keyed on fs fingerprint
 │   ├── hunt_parser.py      # YAML frontmatter + LOCK section markdown parser

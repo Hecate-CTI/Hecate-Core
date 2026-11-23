@@ -6,7 +6,7 @@ brittleness for orchestrators like Hecate-Runner.
 """
 
 import re
-from typing import Optional, Dict, Any, Tuple, List
+from typing import Any, Dict, List, Optional, Tuple, cast
 from pathlib import Path
 
 from hecate_agent.agents.llm.hypothesis_generator import (
@@ -322,10 +322,24 @@ def query_abuseipdb_ip(ip: str) -> str:
 
 
 def query_rdap_domain(domain: str) -> str:
-    """Query public RDAP registry for domain registration age and registrar."""
+    """RDAP registration age and registrar for a domain."""
     from hecate_agent.orchestrator.enrichment import query_rdap_domain as _q
 
     return _q(domain)
+
+
+def query_rdap_ip(ip: str) -> str:
+    """RDAP network registration for an IP."""
+    from hecate_agent.orchestrator.enrichment import query_rdap_ip as _q
+
+    return _q(ip)
+
+
+def query_geoip_ip(ip: str) -> str:
+    """GeoIP location and ASN for an IP."""
+    from hecate_agent.orchestrator.enrichment import query_geoip_ip as _q
+
+    return _q(ip)
 
 
 def query_epss(cve: str) -> str:
@@ -572,6 +586,7 @@ def deploy_transpiled_query(
     techniques: Optional[List[str]] = None,
     tags: Optional[List[str]] = None,
     dry_run: bool = True,
+    deployer: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Deploy a transpiled search query to its target SIEM or EDR platform via REST API."""
     from hecate_agent.core.query_deployer import DeploymentPayload, QueryDeployer
@@ -587,9 +602,11 @@ def deploy_transpiled_query(
         techniques=techniques or [],
         tags=tags or [],
     )
-    deployer = QueryDeployer()
-    result = deployer.deploy(payload, dry_run=dry_run)
-    return result.to_dict()
+    if deployer is not None:
+        result = deployer.deploy(payload, dry_run=dry_run)
+        return cast(Dict[str, Any], result.to_dict())
+    with QueryDeployer() as d:
+        return d.deploy(payload, dry_run=dry_run).to_dict()
 
 
 def undeploy_transpiled_query(
@@ -599,6 +616,7 @@ def undeploy_transpiled_query(
     query: str = "",
     remote_id: Optional[str] = None,
     dry_run: bool = True,
+    deployer: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Undeploy/delete a transpiled search query from its target SIEM or EDR platform via REST API."""
     from hecate_agent.core.query_deployer import QueryDeployer, UndeploymentPayload
@@ -610,9 +628,11 @@ def undeploy_transpiled_query(
         remote_id=remote_id,
         query=query,
     )
-    deployer = QueryDeployer()
-    result = deployer.undeploy(payload, dry_run=dry_run)
-    return result.to_dict()
+    if deployer is not None:
+        result = deployer.undeploy(payload, dry_run=dry_run)
+        return cast(Dict[str, Any], result.to_dict())
+    with QueryDeployer() as d:
+        return d.undeploy(payload, dry_run=dry_run).to_dict()
 
 
 def sync_transpiled_query(
@@ -621,6 +641,7 @@ def sync_transpiled_query(
     hunt_id: str,
     title: str,
     dry_run: bool = True,
+    deployer: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Verify synchronization and drift of a transpiled search query against target SIEM/EDR."""
     from hecate_agent.core.query_deployer import DeploymentPayload, QueryDeployer
@@ -632,9 +653,46 @@ def sync_transpiled_query(
         dialect=target.split("_")[-1] if "_" in target else "txt",
         query=query,
     )
-    deployer = QueryDeployer()
-    result = deployer.sync(payload, dry_run=dry_run)
-    return result.to_dict()
+    if deployer is not None:
+        result = deployer.sync(payload, dry_run=dry_run)
+        return cast(Dict[str, Any], result.to_dict())
+    with QueryDeployer() as d:
+        return d.sync(payload, dry_run=dry_run).to_dict()
+
+
+def sync_transpiled_queries(
+    items: List[Dict[str, Any]],
+    dry_run: bool = True,
+    deployer: Optional[Any] = None,
+) -> List[Dict[str, Any]]:
+    """Batch verify synchronization and drift across multiple queries using a single shared deployer."""
+    from hecate_agent.core.query_deployer import QueryDeployer
+
+    def _execute(d: QueryDeployer) -> List[Dict[str, Any]]:
+        results: List[Dict[str, Any]] = []
+        for item in items:
+            res = sync_transpiled_query(
+                target=item["target"],
+                query=item["query"],
+                hunt_id=item["hunt_id"],
+                title=item["title"],
+                dry_run=item.get("dry_run", dry_run),
+                deployer=d,
+            )
+            results.append(res)
+        return results
+
+    if deployer is not None:
+        return _execute(deployer)
+    with QueryDeployer() as d:
+        return _execute(d)
+
+
+def get_query_deployer(timeout_sec: float = 30.0) -> Any:
+    """Return a QueryDeployer context manager instance for batch operations."""
+    from hecate_agent.core.query_deployer import QueryDeployer
+
+    return QueryDeployer(timeout_sec=timeout_sec)
 
 
 def tune_sigma_rule(
