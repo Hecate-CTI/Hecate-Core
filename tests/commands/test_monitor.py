@@ -1805,9 +1805,11 @@ def test_diagnose_state_access_permission_error(tmp_path: Path, monkeypatch):
 
 
 def test_collect_hunts_metrics_per_file_caching_and_incremental_refresh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    import hecate_agent.commands.monitor_metrics as mm
+
     clock = [1000.0]
     monkeypatch.setattr(m.time, "monotonic", lambda: clock[0])
-    m.clear_hunts_metrics_cache()
+    mm.clear_hunts_metrics_cache()
 
     hunts_dir = tmp_path / "hunts" / "2026" / "Q4"
     hunts_dir.mkdir(parents=True)
