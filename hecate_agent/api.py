@@ -6,7 +6,7 @@ brittleness for orchestrators like Hecate-Runner.
 """
 
 import re
-from typing import Optional, Dict, Any, Tuple, List
+from typing import Any, Dict, List, Optional, Tuple, cast
 from pathlib import Path
 
 from hecate_agent.agents.llm.hypothesis_generator import (
@@ -604,10 +604,9 @@ def deploy_transpiled_query(
     )
     if deployer is not None:
         result = deployer.deploy(payload, dry_run=dry_run)
-        return result.to_dict()
+        return cast(Dict[str, Any], result.to_dict())
     with QueryDeployer() as d:
-        result = d.deploy(payload, dry_run=dry_run)
-        return result.to_dict()
+        return d.deploy(payload, dry_run=dry_run).to_dict()
 
 
 def undeploy_transpiled_query(
@@ -631,10 +630,9 @@ def undeploy_transpiled_query(
     )
     if deployer is not None:
         result = deployer.undeploy(payload, dry_run=dry_run)
-        return result.to_dict()
+        return cast(Dict[str, Any], result.to_dict())
     with QueryDeployer() as d:
-        result = d.undeploy(payload, dry_run=dry_run)
-        return result.to_dict()
+        return d.undeploy(payload, dry_run=dry_run).to_dict()
 
 
 def sync_transpiled_query(
@@ -657,10 +655,9 @@ def sync_transpiled_query(
     )
     if deployer is not None:
         result = deployer.sync(payload, dry_run=dry_run)
-        return result.to_dict()
+        return cast(Dict[str, Any], result.to_dict())
     with QueryDeployer() as d:
-        result = d.sync(payload, dry_run=dry_run)
-        return result.to_dict()
+        return d.sync(payload, dry_run=dry_run).to_dict()
 
 
 def sync_transpiled_queries(

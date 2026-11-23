@@ -581,52 +581,6 @@ def _collect_hunts_metrics(workspace: Optional[Path] = None) -> HuntsMetrics:
 
     return metrics
 
-    cat_metrics = categorize_techniques_by_matrix(techniques)
-
-    metrics = HuntsMetrics(
-        total_hunts=file_count,
-        drafts_count=drafts_count,
-        active_count=active_count,
-        completed_count=completed_count,
-        threats_count=len(all_threats),
-        actors_count=len(actors),
-        campaigns_count=len(campaigns),
-        malware_count=len(malware),
-        ttps_count=len(techniques),
-        sigma_rules_count=sigma_rules_count,
-        network_total=len(network_ips | network_domains | network_urls),
-        network_ips=len(network_ips),
-        network_domains=len(network_domains),
-        network_urls=len(network_urls),
-        host_total=len(host_hashes | host_paths),
-        host_hashes=len(host_hashes),
-        host_paths=len(host_paths),
-        enterprise_ttps=cat_metrics.get("enterprise", {}),
-        cloud_ttps=cat_metrics.get("cloud", {}),
-        containers_ttps=cat_metrics.get("containers", {}),
-        mobile_ttps=cat_metrics.get("mobile", {}),
-        ics_ttps=cat_metrics.get("ics", {}),
-        tactic_hunts=tactic_hunts,
-        tactic_rules=tactic_rules,
-        tactic_iocs=tactic_iocs,
-        matrix_hunts=matrix_hunts,
-        matrix_rules=matrix_rules,
-        matrix_iocs=matrix_iocs,
-        enterprise_total=cat_metrics.get("enterprise_total", 0),
-        cloud_total=cat_metrics.get("cloud_total", 0),
-        containers_total=cat_metrics.get("containers_total", 0),
-        mobile_total=cat_metrics.get("mobile_total", 0),
-        ics_total=cat_metrics.get("ics_total", 0),
-        grounding_asserted=grounding_asserted,
-        grounding_corroborated=grounding_corroborated,
-        grounding_derived=grounding_derived,
-        grounding_unsupported=grounding_unsupported,
-        fingerprints_count=len(fingerprints),
-        cloud_ops_count=len(cloud_ops),
-    )
-    _HUNTS_METRICS_CACHE[resolved_path] = (now, fingerprint_count, max_mtime, metrics)
-    return metrics
-
 
 @dataclass
 class PurpleTeamMetrics:
