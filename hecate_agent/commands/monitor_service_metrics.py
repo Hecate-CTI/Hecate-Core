@@ -335,11 +335,26 @@ def _hybrid_status(label: str, is_set: bool, context: ServiceMetricsContext) -> 
 def _rdap_status(label: str, is_set: bool, context: ServiceMetricsContext) -> IntegrationStatus:
     detail = "whois/age"
     dom_count = 0
+    ip_count = 0
     for e in context.active_enrichment_events:
         m = re.search(r"(\d+)\s+domain", e.message, re.IGNORECASE)
         if m:
             dom_count = max(dom_count, int(m.group(1)))
-    metric = f"{dom_count} queries"
+        m_ip = re.search(r"(\d+)\s+ip", e.message, re.IGNORECASE)
+        if m_ip:
+            ip_count = max(ip_count, int(m_ip.group(1)))
+    metric = f"{dom_count + ip_count} queries"
+    return IntegrationStatus(label, True, detail, metric)
+
+
+def _geoip_status(label: str, is_set: bool, context: ServiceMetricsContext) -> IntegrationStatus:
+    detail = "asn/geo"
+    ip_count = 0
+    for e in context.active_enrichment_events:
+        m = re.search(r"(\d+)\s+ip", e.message, re.IGNORECASE)
+        if m:
+            ip_count = max(ip_count, int(m.group(1)))
+    metric = f"{ip_count} queries" if ip_count > 0 else "asn/geo"
     return IntegrationStatus(label, True, detail, metric)
 
 
@@ -516,6 +531,7 @@ _SERVICE_METRICS = {
     "URLScan": _urlscan_status,
     "Hybrid": _hybrid_status,
     "RDAP": _rdap_status,
+    "GeoIP": _geoip_status,
     "crt.sh": _crt_sh_status,
     "PDNS": _pdns_status,
     "Spur": _spur_status,

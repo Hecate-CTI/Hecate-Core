@@ -112,6 +112,266 @@ _GENERIC_THREAT_NAMES = {
 }
 
 _HUNTS_METRICS_CACHE: Dict[Path, Tuple[float, int, float, HuntsMetrics]] = {}
+_PER_FILE_HUNT_CACHE: Dict[Path, Tuple[float, _SingleHuntMetrics]] = {}
+_PER_FILE_SIGMA_CACHE: Dict[Path, Tuple[float, Optional[_SingleSigmaMetrics]]] = {}
+_TACTIC_CLASSIFICATIONS_CACHE: Dict[frozenset[str], Dict[str, Any]] = {}
+
+
+@dataclass
+class _SingleHuntMetrics:
+    status: str = "draft"  # "active" | "completed" | "draft"
+    techniques: Set[str] = field(default_factory=set)
+    actors: Set[str] = field(default_factory=set)
+    campaigns: Set[str] = field(default_factory=set)
+    malware: Set[str] = field(default_factory=set)
+    network_ips: Set[str] = field(default_factory=set)
+    network_domains: Set[str] = field(default_factory=set)
+    network_urls: Set[str] = field(default_factory=set)
+    host_hashes: Set[str] = field(default_factory=set)
+    host_paths: Set[str] = field(default_factory=set)
+    fingerprints: Set[str] = field(default_factory=set)
+    cloud_ops: Set[str] = field(default_factory=set)
+    hunt_iocs_count: int = 0
+    grounding_asserted: int = 0
+    grounding_corroborated: int = 0
+    grounding_derived: int = 0
+    grounding_unsupported: int = 0
+    tactics: Dict[str, Set[str]] = field(default_factory=dict)
+
+
+@dataclass
+class _SingleSigmaMetrics:
+    rule_techniques: Set[str] = field(default_factory=set)
+    declared_tactics: Set[str] = field(default_factory=set)
+    tactics: Dict[str, Set[str]] = field(default_factory=dict)
+
+
+def _is_valid_threat(val: str) -> bool:
+    if not val or len(val) < 2:
+        return False
+    from hecate_agent.core.grounding import _ACRONYM_STOPWORDS
+
+    lowered = val.lower()
+    if lowered in _GENERIC_THREAT_NAMES or lowered in _ACRONYM_STOPWORDS:
+        return False
+    if lowered.startswith("[review") or lowered.startswith("review cti"):
+        return False
+    if "/" in val or "\\" in val:
+        return False
+    if _RE_HEX.match(val) or _RE_IP.match(val):
+        return False
+    return True
+
+
+def _classify_active_tactics(techniques: Set[str], declared: Optional[Set[str]] = None) -> Dict[str, Set[str]]:
+    from hecate_agent.core.attack_matrix import canonical_tactic, categorize_techniques_by_matrix
+
+    key = frozenset(techniques)
+    if key not in _TACTIC_CLASSIFICATIONS_CACHE:
+        _TACTIC_CLASSIFICATIONS_CACHE[key] = categorize_techniques_by_matrix(techniques)
+    classified = _TACTIC_CLASSIFICATIONS_CACHE[key]
+    active: Dict[str, Set[str]] = {
+        domain: {tactic for tactic, count in classified.get(domain, {}).items() if count}
+        for domain in ("enterprise", "cloud", "containers", "mobile", "ics")
+    }
+    if declared and not any(active.values()):
+        active["enterprise"].update(
+            canonical_tactic(tactic) for tactic in declared if canonical_tactic(tactic) in classified.get("enterprise", {})
+        )
+    return {d: t for d, t in active.items() if t}
+
+
+def _parse_single_hunt_file(hunt_file: Path) -> Optional[_SingleHuntMetrics]:
+    try:
+        text = hunt_file.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+
+    entry = _SingleHuntMetrics()
+    hunt_techniques: Set[str] = set()
+    hunt_iocs: Set[str] = set()
+
+    def _record_threat(name: str, hint: str = "") -> None:
+        clean = name.strip().strip("*_`# ")
+        if not _is_valid_threat(clean):
+            return
+        if _RE_ACTOR_TERMS.search(clean) or hint == "actor":
+            entry.actors.add(clean)
+        elif _RE_CAMPAIGN_TERMS.search(clean) or hint == "campaign":
+            entry.campaigns.add(clean)
+        elif _RE_MALWARE_TERMS.search(clean) or _RE_CAMEL_MALWARE.search(clean) or hint == "malware":
+            entry.malware.add(clean)
+        elif hint == "attribution":
+            entry.actors.add(clean)
+        else:
+            entry.malware.add(clean)
+
+    m_fm = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.DOTALL)
+    if m_fm:
+        try:
+            fm = yaml.safe_load(m_fm.group(1)) or {}
+            st = str(fm.get("status", "")).lower()
+            if st in {"active", "in_progress", "in-progress"}:
+                entry.status = "active"
+            elif st in {"completed", "done", "closed"}:
+                entry.status = "completed"
+            else:
+                entry.status = "draft"
+
+            for t in fm.get("techniques", []):
+                t_str = str(t).strip()
+                if _RE_TECHNIQUE.match(t_str):
+                    entry.techniques.add(t_str)
+                    hunt_techniques.add(t_str)
+
+            for k in ("threat", "threat_actor", "actor"):
+                val = fm.get(k)
+                if val and isinstance(val, str):
+                    for p in re.split(r",\s*|\s*;\s*|\s+and\s+", val):
+                        _record_threat(p, hint="attribution")
+        except Exception:
+            entry.status = "draft"
+    else:
+        entry.status = "draft"
+
+    m_act = _RE_ACTOR_ROW.search(text)
+    if m_act:
+        for p in re.split(r",\s*|\s*;\s*|\s+and\s+", m_act.group(1)):
+            _record_threat(p, hint="actor")
+
+    m_ta = _RE_THREAT_CONTEXT.search(text)
+    if m_ta:
+        for p in re.split(r",\s*|\s*;\s*|\s+and\s+", m_ta.group(1)):
+            _record_threat(p, hint="attribution")
+
+    m_tags = re.search(r"Tags:\s*([^\n]+)", text)
+    if m_tags:
+        for tag in m_tags.group(1).split(","):
+            clean_tag = tag.strip().strip("*_`# ")
+            if _is_valid_threat(clean_tag):
+                if _RE_CAMPAIGN_TERMS.search(clean_tag):
+                    entry.campaigns.add(clean_tag)
+                elif _RE_MALWARE_TERMS.search(clean_tag) or _RE_CAMEL_MALWARE.search(clean_tag):
+                    entry.malware.add(clean_tag)
+
+    for m_ge in _RE_GROUNDING_ENTITY.finditer(text):
+        _record_threat(m_ge.group(1).strip())
+
+    for m_ir in _RE_ROLE_INDICATOR.finditer(text):
+        val, itype = m_ir.group(1).strip(), m_ir.group(2).lower()
+        if itype in {"malware_family", "malware"}:
+            _record_threat(val, hint="malware")
+        elif itype in {"threat_actor", "actor"}:
+            _record_threat(val, hint="actor")
+        elif itype == "campaign":
+            _record_threat(val, hint="campaign")
+        elif itype in {"ip", "ipv4", "ipv6"}:
+            clean_ip = val.replace("[", "").replace("]", "")
+            if _RE_IP.match(clean_ip):
+                entry.network_ips.add(clean_ip)
+                hunt_iocs.add(clean_ip)
+        elif itype in {"domain", "hostname"}:
+            clean_dom = val.replace("[", "").replace("]", "").lower()
+            entry.network_domains.add(clean_dom)
+            hunt_iocs.add(clean_dom)
+        elif itype == "url":
+            clean_url = val.replace("[", "").replace("]", "")
+            entry.network_urls.add(clean_url)
+            hunt_iocs.add(clean_url)
+        elif itype in {"hash", "file_hash", "sha256", "md5", "sha1"}:
+            clean_hsh = val.lower()
+            entry.host_hashes.add(clean_hsh)
+            hunt_iocs.add(clean_hsh)
+        elif itype in {"file_path", "path", "file", "registry", "process"}:
+            entry.host_paths.add(val)
+            hunt_iocs.add(val)
+        elif itype in {"ja4", "jarm", "ssl_fingerprint", "tls_hash", "fingerprint"}:
+            entry.fingerprints.add(val.lower())
+            hunt_iocs.add(val.lower())
+        elif itype in {"iam_operation", "cloud_role", "k8s_action", "cloud_action"}:
+            entry.cloud_ops.add(val)
+            hunt_iocs.add(val)
+
+    m_ioc = re.search(r"###\s+Indicators of Compromise.*?(?=\n###\s+[A-Z]|\n## |\Z)", text, re.DOTALL | re.IGNORECASE)
+    if m_ioc:
+        ioc_txt = m_ioc.group(0)
+        for ip in _RE_IP.findall(ioc_txt):
+            entry.network_ips.add(ip)
+            hunt_iocs.add(ip)
+        for d in _RE_DOMAIN.findall(ioc_txt):
+            clean_d = d.lower()
+            entry.network_domains.add(clean_d)
+            hunt_iocs.add(clean_d)
+        for hsh in _RE_SHA256.findall(ioc_txt):
+            clean_h = hsh.lower()
+            entry.host_hashes.add(clean_h)
+            hunt_iocs.add(clean_h)
+        for hsh in _RE_MD5.findall(ioc_txt):
+            clean_h = hsh.lower()
+            entry.host_hashes.add(clean_h)
+            hunt_iocs.add(clean_h)
+        for hsh in _RE_SHA1.findall(ioc_txt):
+            clean_h = hsh.lower()
+            entry.host_hashes.add(clean_h)
+            hunt_iocs.add(clean_h)
+        m_fp = re.search(r"####\s+File Paths.*?(?=####|\Z)", ioc_txt, re.DOTALL | re.IGNORECASE)
+        if m_fp:
+            for p in re.findall(r"`([^`]+)`", m_fp.group(0)):
+                entry.host_paths.add(p)
+                hunt_iocs.add(p)
+
+    entry.hunt_iocs_count = len(hunt_iocs)
+    entry.tactics = _classify_active_tactics(hunt_techniques)
+
+    m_gs = _RE_GROUNDING_SUMMARY.search(text)
+    if m_gs:
+        entry.grounding_asserted = int(m_gs.group(1))
+        entry.grounding_corroborated = int(m_gs.group(2))
+        entry.grounding_derived = int(m_gs.group(3))
+        entry.grounding_unsupported = int(m_gs.group(4))
+    else:
+        m_gsec = re.search(r"###\s+Grounding.*?(?=\n###\s+[A-Z]|\n## |\Z)", text, re.DOTALL | re.IGNORECASE)
+        if m_gsec:
+            for line in m_gsec.group(0).splitlines():
+                if not line.startswith("|") or "---" in line or "Claim" in line:
+                    continue
+                l_lower = line.lower()
+                if "unsupported" in l_lower:
+                    entry.grounding_unsupported += 1
+                elif "asserted" in l_lower:
+                    entry.grounding_asserted += 1
+                elif "inferred" in l_lower or "derived" in l_lower:
+                    entry.grounding_derived += 1
+                elif "research" in l_lower or "corroborated" in l_lower:
+                    entry.grounding_corroborated += 1
+
+    return entry
+
+
+def _parse_single_sigma_file(rule_file: Path) -> Optional[_SingleSigmaMetrics]:
+    try:
+        rule = yaml.safe_load(rule_file.read_text(encoding="utf-8"))
+        if not isinstance(rule, dict) or not isinstance(rule.get("tags"), list):
+            return None
+        tags = [str(tag) for tag in rule["tags"] if str(tag).lower().startswith("attack.")]
+        rule_techniques = {technique for tag in tags for technique in _RE_TECHNIQUE.findall(tag.upper())}
+        declared_tactics = {tag.split(".", 1)[1].lower().replace("_", "-") for tag in tags}
+        tactics = _classify_active_tactics(rule_techniques, declared=declared_tactics)
+        return _SingleSigmaMetrics(
+            rule_techniques=rule_techniques,
+            declared_tactics=declared_tactics,
+            tactics=tactics,
+        )
+    except (OSError, UnicodeError, yaml.YAMLError):
+        return None
+
+
+def clear_hunts_metrics_cache() -> None:
+    """Clear all global hunts metrics caches (useful for testing)."""
+    _HUNTS_METRICS_CACHE.clear()
+    _PER_FILE_HUNT_CACHE.clear()
+    _PER_FILE_SIGMA_CACHE.clear()
+    _TACTIC_CLASSIFICATIONS_CACHE.clear()
 
 
 def _collect_hunts_metrics(workspace: Optional[Path] = None) -> HuntsMetrics:
@@ -182,214 +442,56 @@ def _collect_hunts_metrics(workspace: Optional[Path] = None) -> HuntsMetrics:
     matrix_rules: Dict[str, int] = {}
     matrix_iocs: Dict[str, int] = {}
 
-    from hecate_agent.core.attack_matrix import canonical_tactic, categorize_techniques_by_matrix
-
-    classifications: Dict[frozenset[str], Dict[str, Any]] = {}
-
-    def record_tactic_document(
-        ids: Set[str],
-        counts: Dict[str, Dict[str, int]],
-        totals: Dict[str, int],
-        declared: Optional[Set[str]] = None,
-        weight: int = 1,
-    ) -> None:
-        key = frozenset(ids)
-        if key not in classifications:
-            classifications[key] = categorize_techniques_by_matrix(ids)
-        classified = classifications[key]
-        active = {
-            domain: {tactic for tactic, count in classified.get(domain, {}).items() if count}
-            for domain in ("enterprise", "cloud", "containers", "mobile", "ics")
-        }
-        if declared and not any(active.values()):
-            active["enterprise"].update(
-                canonical_tactic(tactic) for tactic in declared
-                if canonical_tactic(tactic) in classified.get("enterprise", {})
-            )
-        for domain, tactics in active.items():
-            if tactics:
-                totals[domain] = totals.get(domain, 0) + weight
-            for tactic in tactics:
-                domain_counts = counts.setdefault(domain, {})
-                domain_counts[tactic] = domain_counts.get(tactic, 0) + weight
-
-    from hecate_agent.core.grounding import _ACRONYM_STOPWORDS
-
-    def _is_valid_threat(val: str) -> bool:
-        if not val or len(val) < 2:
-            return False
-        lowered = val.lower()
-        if lowered in _GENERIC_THREAT_NAMES or lowered in _ACRONYM_STOPWORDS:
-            return False
-        if lowered.startswith("[review") or lowered.startswith("review cti"):
-            return False
-        if "/" in val or "\\" in val:
-            return False
-        if _RE_HEX.match(val) or _RE_IP.match(val):
-            return False
-        return True
-
-    def _record_threat(name: str, hint: str = "") -> None:
-        clean = name.strip().strip("*_`# ")
-        if not _is_valid_threat(clean):
-            return
-        if _RE_ACTOR_TERMS.search(clean) or hint == "actor":
-            actors.add(clean)
-        elif _RE_CAMPAIGN_TERMS.search(clean) or hint == "campaign":
-            campaigns.add(clean)
-        elif _RE_MALWARE_TERMS.search(clean) or _RE_CAMEL_MALWARE.search(clean) or hint == "malware":
-            malware.add(clean)
-        elif hint == "attribution":
-            actors.add(clean)
-        else:
-            malware.add(clean)
-
     for hunt_file in hunt_files:
         try:
-            text = hunt_file.read_text(encoding="utf-8", errors="ignore")
+            mtime = hunt_file.stat().st_mtime
         except OSError:
             continue
 
-        hunt_techniques: Set[str] = set()
-        hunt_iocs: Set[str] = set()
-        m_fm = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.DOTALL)
-        if m_fm:
-            try:
-                fm = yaml.safe_load(m_fm.group(1)) or {}
-                st = str(fm.get("status", "")).lower()
-                if st in {"active", "in_progress", "in-progress"}:
-                    active_count += 1
-                elif st in {"completed", "done", "closed"}:
-                    completed_count += 1
-                else:
-                    drafts_count += 1
+        cached_hunt = _PER_FILE_HUNT_CACHE.get(hunt_file)
+        if cached_hunt is not None and cached_hunt[0] == mtime:
+            entry = cached_hunt[1]
+        else:
+            parsed = _parse_single_hunt_file(hunt_file)
+            if parsed is None:
+                continue
+            entry = parsed
+            _PER_FILE_HUNT_CACHE[hunt_file] = (mtime, entry)
 
-                for t in fm.get("techniques", []):
-                    t_str = str(t).strip()
-                    if _RE_TECHNIQUE.match(t_str):
-                        techniques.add(t_str)
-                        hunt_techniques.add(t_str)
-
-                for k in ("threat", "threat_actor", "actor"):
-                    val = fm.get(k)
-                    if val and isinstance(val, str):
-                        for p in re.split(r",\s*|\s*;\s*|\s+and\s+", val):
-                            _record_threat(p, hint="attribution")
-            except Exception:
-                drafts_count += 1
+        if entry.status == "active":
+            active_count += 1
+        elif entry.status == "completed":
+            completed_count += 1
         else:
             drafts_count += 1
 
-        m_act = _RE_ACTOR_ROW.search(text)
-        if m_act:
-            for p in re.split(r",\s*|\s*;\s*|\s+and\s+", m_act.group(1)):
-                _record_threat(p, hint="actor")
+        techniques.update(entry.techniques)
+        actors.update(entry.actors)
+        campaigns.update(entry.campaigns)
+        malware.update(entry.malware)
+        network_ips.update(entry.network_ips)
+        network_domains.update(entry.network_domains)
+        network_urls.update(entry.network_urls)
+        host_hashes.update(entry.host_hashes)
+        host_paths.update(entry.host_paths)
+        fingerprints.update(entry.fingerprints)
+        cloud_ops.update(entry.cloud_ops)
+        grounding_asserted += entry.grounding_asserted
+        grounding_corroborated += entry.grounding_corroborated
+        grounding_derived += entry.grounding_derived
+        grounding_unsupported += entry.grounding_unsupported
 
-        m_ta = _RE_THREAT_CONTEXT.search(text)
-        if m_ta:
-            for p in re.split(r",\s*|\s*;\s*|\s+and\s+", m_ta.group(1)):
-                _record_threat(p, hint="attribution")
+        for domain, tactics_set in entry.tactics.items():
+            matrix_hunts[domain] = matrix_hunts.get(domain, 0) + 1
+            domain_counts = tactic_hunts.setdefault(domain, {})
+            for tactic in tactics_set:
+                domain_counts[tactic] = domain_counts.get(tactic, 0) + 1
 
-        m_tags = re.search(r"Tags:\s*([^\n]+)", text)
-        if m_tags:
-            for tag in m_tags.group(1).split(","):
-                clean_tag = tag.strip().strip("*_`# ")
-                if _is_valid_threat(clean_tag):
-                    if _RE_CAMPAIGN_TERMS.search(clean_tag):
-                        campaigns.add(clean_tag)
-                    elif _RE_MALWARE_TERMS.search(clean_tag) or _RE_CAMEL_MALWARE.search(clean_tag):
-                        malware.add(clean_tag)
-
-        for m_ge in _RE_GROUNDING_ENTITY.finditer(text):
-            _record_threat(m_ge.group(1).strip())
-
-        for m_ir in _RE_ROLE_INDICATOR.finditer(text):
-            val, itype = m_ir.group(1).strip(), m_ir.group(2).lower()
-            if itype in {"malware_family", "malware"}:
-                _record_threat(val, hint="malware")
-            elif itype in {"threat_actor", "actor"}:
-                _record_threat(val, hint="actor")
-            elif itype == "campaign":
-                _record_threat(val, hint="campaign")
-            elif itype in {"ip", "ipv4", "ipv6"}:
-                clean_ip = val.replace("[", "").replace("]", "")
-                if _RE_IP.match(clean_ip):
-                    network_ips.add(clean_ip)
-                    hunt_iocs.add(clean_ip)
-            elif itype in {"domain", "hostname"}:
-                clean_dom = val.replace("[", "").replace("]", "").lower()
-                network_domains.add(clean_dom)
-                hunt_iocs.add(clean_dom)
-            elif itype == "url":
-                clean_url = val.replace("[", "").replace("]", "")
-                network_urls.add(clean_url)
-                hunt_iocs.add(clean_url)
-            elif itype in {"hash", "file_hash", "sha256", "md5", "sha1"}:
-                clean_hsh = val.lower()
-                host_hashes.add(clean_hsh)
-                hunt_iocs.add(clean_hsh)
-            elif itype in {"file_path", "path", "file", "registry", "process"}:
-                host_paths.add(val)
-                hunt_iocs.add(val)
-            elif itype in {"ja4", "jarm", "ssl_fingerprint", "tls_hash", "fingerprint"}:
-                fingerprints.add(val.lower())
-                hunt_iocs.add(val.lower())
-            elif itype in {"iam_operation", "cloud_role", "k8s_action", "cloud_action"}:
-                cloud_ops.add(val)
-                hunt_iocs.add(val)
-
-        m_ioc = re.search(r"###\s+Indicators of Compromise.*?(?=\n###\s+[A-Z]|\n## |\Z)", text, re.DOTALL | re.IGNORECASE)
-        if m_ioc:
-            ioc_txt = m_ioc.group(0)
-            for ip in _RE_IP.findall(ioc_txt):
-                network_ips.add(ip)
-                hunt_iocs.add(ip)
-            for d in _RE_DOMAIN.findall(ioc_txt):
-                clean_d = d.lower()
-                network_domains.add(clean_d)
-                hunt_iocs.add(clean_d)
-            for hsh in _RE_SHA256.findall(ioc_txt):
-                clean_h = hsh.lower()
-                host_hashes.add(clean_h)
-                hunt_iocs.add(clean_h)
-            for hsh in _RE_MD5.findall(ioc_txt):
-                clean_h = hsh.lower()
-                host_hashes.add(clean_h)
-                hunt_iocs.add(clean_h)
-            for hsh in _RE_SHA1.findall(ioc_txt):
-                clean_h = hsh.lower()
-                host_hashes.add(clean_h)
-                hunt_iocs.add(clean_h)
-            m_fp = re.search(r"####\s+File Paths.*?(?=####|\Z)", ioc_txt, re.DOTALL | re.IGNORECASE)
-            if m_fp:
-                for p in re.findall(r"`([^`]+)`", m_fp.group(0)):
-                    host_paths.add(p)
-                    hunt_iocs.add(p)
-
-        record_tactic_document(hunt_techniques, tactic_hunts, matrix_hunts, weight=1)
-        record_tactic_document(hunt_techniques, tactic_iocs, matrix_iocs, weight=len(hunt_iocs))
-
-        m_gs = _RE_GROUNDING_SUMMARY.search(text)
-        if m_gs:
-            grounding_asserted += int(m_gs.group(1))
-            grounding_corroborated += int(m_gs.group(2))
-            grounding_derived += int(m_gs.group(3))
-            grounding_unsupported += int(m_gs.group(4))
-        else:
-            m_gsec = re.search(r"###\s+Grounding.*?(?=\n###\s+[A-Z]|\n## |\Z)", text, re.DOTALL | re.IGNORECASE)
-            if m_gsec:
-                for line in m_gsec.group(0).splitlines():
-                    if not line.startswith("|") or "---" in line or "Claim" in line:
-                        continue
-                    l_lower = line.lower()
-                    if "unsupported" in l_lower:
-                        grounding_unsupported += 1
-                    elif "asserted" in l_lower:
-                        grounding_asserted += 1
-                    elif "inferred" in l_lower or "derived" in l_lower:
-                        grounding_derived += 1
-                    elif "research" in l_lower or "corroborated" in l_lower:
-                        grounding_corroborated += 1
+            if entry.hunt_iocs_count:
+                matrix_iocs[domain] = matrix_iocs.get(domain, 0) + entry.hunt_iocs_count
+                ioc_counts = tactic_iocs.setdefault(domain, {})
+                for tactic in tactics_set:
+                    ioc_counts[tactic] = ioc_counts.get(tactic, 0) + entry.hunt_iocs_count
 
     actors.difference_update(malware | campaigns)
     all_threats = actors | campaigns | malware
@@ -397,15 +499,28 @@ def _collect_hunts_metrics(workspace: Optional[Path] = None) -> HuntsMetrics:
     sigma_rules_count = len(sigma_files)
     for rule_file in sigma_files:
         try:
-            rule = yaml.safe_load(rule_file.read_text(encoding="utf-8"))
-            if not isinstance(rule, dict) or not isinstance(rule.get("tags"), list):
-                continue
-            tags = [str(tag) for tag in rule["tags"] if str(tag).lower().startswith("attack.")]
-            rule_techniques = {technique for tag in tags for technique in _RE_TECHNIQUE.findall(tag.upper())}
-            declared_tactics = {tag.split(".", 1)[1].lower().replace("_", "-") for tag in tags}
-            record_tactic_document(rule_techniques, tactic_rules, matrix_rules, declared_tactics)
-        except (OSError, UnicodeError, yaml.YAMLError):
+            mtime = rule_file.stat().st_mtime
+        except OSError:
             continue
+
+        cached_sigma = _PER_FILE_SIGMA_CACHE.get(rule_file)
+        if cached_sigma is not None and cached_sigma[0] == mtime:
+            sigma_entry = cached_sigma[1]
+        else:
+            sigma_parsed = _parse_single_sigma_file(rule_file)
+            _PER_FILE_SIGMA_CACHE[rule_file] = (mtime, sigma_parsed)
+            sigma_entry = sigma_parsed
+
+        if sigma_entry is None:
+            continue
+
+        for domain, tactics_set in sigma_entry.tactics.items():
+            matrix_rules[domain] = matrix_rules.get(domain, 0) + 1
+            rule_domain_counts = tactic_rules.setdefault(domain, {})
+            for tactic in tactics_set:
+                rule_domain_counts[tactic] = rule_domain_counts.get(tactic, 0) + 1
+
+    from hecate_agent.core.attack_matrix import categorize_techniques_by_matrix
 
     cat_metrics = categorize_techniques_by_matrix(techniques)
 
@@ -451,6 +566,19 @@ def _collect_hunts_metrics(workspace: Optional[Path] = None) -> HuntsMetrics:
         cloud_ops_count=len(cloud_ops),
     )
     _HUNTS_METRICS_CACHE[resolved_path] = (now, fingerprint_count, max_mtime, metrics)
+
+    # Periodic cache maintenance: prune entries if cache grew much larger than current file count
+    if len(_PER_FILE_HUNT_CACHE) > file_count + 300:
+        hunt_set = set(hunt_files)
+        for k in list(_PER_FILE_HUNT_CACHE.keys()):
+            if k not in hunt_set:
+                _PER_FILE_HUNT_CACHE.pop(k, None)
+    if len(_PER_FILE_SIGMA_CACHE) > sigma_rules_count + 300:
+        sigma_set = set(sigma_files)
+        for k in list(_PER_FILE_SIGMA_CACHE.keys()):
+            if k not in sigma_set:
+                _PER_FILE_SIGMA_CACHE.pop(k, None)
+
     return metrics
 
 
@@ -578,7 +706,18 @@ def _collect_purple_team_metrics(
             metrics.bas_skipped += 1
             metrics.bas_last_skip_reason = str(record.get("reason") or "No approved procedure")
             return
-        if status not in {"verified_true_positive", "detection_miss", "telemetry_missing", "detonation_failed", "error", "simulation_match", "simulation_no_match", "simulation_unsupported", "query_match", "smoke_check_match"}:
+        if status not in {
+            "verified_true_positive",
+            "detection_miss",
+            "telemetry_missing",
+            "detonation_failed",
+            "error",
+            "simulation_match",
+            "simulation_no_match",
+            "simulation_unsupported",
+            "query_match",
+            "smoke_check_match",
+        }:
             return
         metrics.bas_runs += 1
         metrics.bas_control_runs += int(record.get("purpose") == "sensor_control" or record.get("hunt_id") == "LAB-CHECK")
@@ -586,7 +725,9 @@ def _collect_purple_team_metrics(
         behavioral = record.get("fidelity_scope") == "behavioral"
         control = record.get("purpose") == "sensor_control" or record.get("hunt_id") == "LAB-CHECK"
         verified = (
-            live and behavioral and not control
+            live
+            and behavioral
+            and not control
             and record.get("cleanup_success") is True
             and record.get("telemetry_arrived") is True
             and record.get("rule_triggered") is True
@@ -594,7 +735,8 @@ def _collect_purple_team_metrics(
         )
         siem_bk = str(record.get("siem_backend") or "")
         siem_verified = (
-            verified and siem_bk.lower() in {"splunk", "sentinel", "elastic", "crowdstrike", "rapid7", "sentinelone"}
+            verified
+            and siem_bk.lower() in {"splunk", "sentinel", "elastic", "crowdstrike", "rapid7", "sentinelone"}
             and record.get("verification_scope") == "siem_alert"
             and record.get("siem_alert_fired") is True
             and all(record.get(key) for key in ("alert_search_id", "alert_name", "alert_time_utc"))
@@ -603,7 +745,9 @@ def _collect_purple_team_metrics(
         metrics.bas_mock_runs += int(provider == "mock")
         metrics.bas_live_runs += int(live)
         metrics.bas_verified += int(verified)
-        metrics.bas_simulation_matches += int(status == "simulation_match" or (provider == "mock" and record.get("rule_triggered") is True))
+        metrics.bas_simulation_matches += int(
+            status == "simulation_match" or (provider == "mock" and record.get("rule_triggered") is True)
+        )
         metrics.bas_query_matches += int(status == "query_match")
         metrics.bas_smoke_matches += int(status == "smoke_check_match")
         metrics.bas_detection_misses += int(live and status == "detection_miss")
@@ -656,8 +800,11 @@ def _collect_purple_team_metrics(
     try:
         state = json.loads(state_file.read_text(encoding="utf-8"))
         metrics.bas_mode_label = (
-            "DISABLED" if not state.get("enabled") else
-            "AUTO · approved Linux lab" if state.get("auto_execute_live") else "MANUAL ONLY"
+            "DISABLED"
+            if not state.get("enabled")
+            else "AUTO · approved Linux lab"
+            if state.get("auto_execute_live")
+            else "MANUAL ONLY"
         )
         if state.get("telemetry") == "lab_process":
             metrics.bas_scope_label = "Local process sensor + Sigma"
@@ -695,32 +842,36 @@ def _collect_purple_team_metrics(
                 metadata = {}
             bas_status = str(metadata.get("bas_status") or "")
             if bas_status and metadata.get("bas_run_id") not in seen_bas_ids:
-                observed = (
-                    bas_status in {"verified_true_positive", "detection_miss"}
-                    or bool(re.search(r"\*\*Telemetry Observed:\*\* Yes", content))
+                observed = bas_status in {"verified_true_positive", "detection_miss"} or bool(
+                    re.search(r"\*\*Telemetry Observed:\*\* Yes", content)
                 )
                 target = re.search(r"\*\*Target Technique:\*\* `([^`]+)`", content)
                 hits = re.search(r"\*\*Detection Triggered:\*\* .*?\((\d+) hit\(s\)\)", content)
                 duration = re.search(r"\*\*Duration:\*\* ([\d.]+)s", content)
-                include_bas({
-                    "status": bas_status,
-                    "provider": metadata.get("bas_provider"),
-                    "rule_triggered": metadata.get("bas_detection_triggered"),
-                    "telemetry_arrived": observed,
-                    "technique_id": target.group(1) if target else (metadata.get("techniques", [""])[0] if metadata.get("techniques") else ""),
-                    "matched_events_count": int(hits.group(1)) if hits else 0,
-                    "duration_seconds": float(duration.group(1)) if duration else 0.0,
-                    "detection_latency_sec": metadata.get("bas_detection_latency_sec"),
-                    "siem_backend": metadata.get("bas_backend"),
-                    "search_job_id": metadata.get("bas_search_job_id"),
-                    "siem_alert_fired": metadata.get("bas_siem_alert_fired"),
-                    "verification_scope": metadata.get("bas_verification_scope"),
-                    "fidelity_scope": metadata.get("bas_fidelity_scope"),
-                    "cleanup_success": metadata.get("bas_cleanup_success"),
-                    "alert_search_id": metadata.get("bas_alert_search_id"),
-                    "alert_name": metadata.get("bas_alert_name"),
-                    "alert_time_utc": metadata.get("bas_alert_time_utc"),
-                }, hf.stat().st_mtime)
+                include_bas(
+                    {
+                        "status": bas_status,
+                        "provider": metadata.get("bas_provider"),
+                        "rule_triggered": metadata.get("bas_detection_triggered"),
+                        "telemetry_arrived": observed,
+                        "technique_id": target.group(1)
+                        if target
+                        else (metadata.get("techniques", [""])[0] if metadata.get("techniques") else ""),
+                        "matched_events_count": int(hits.group(1)) if hits else 0,
+                        "duration_seconds": float(duration.group(1)) if duration else 0.0,
+                        "detection_latency_sec": metadata.get("bas_detection_latency_sec"),
+                        "siem_backend": metadata.get("bas_backend"),
+                        "search_job_id": metadata.get("bas_search_job_id"),
+                        "siem_alert_fired": metadata.get("bas_siem_alert_fired"),
+                        "verification_scope": metadata.get("bas_verification_scope"),
+                        "fidelity_scope": metadata.get("bas_fidelity_scope"),
+                        "cleanup_success": metadata.get("bas_cleanup_success"),
+                        "alert_search_id": metadata.get("bas_alert_search_id"),
+                        "alert_name": metadata.get("bas_alert_name"),
+                        "alert_time_utc": metadata.get("bas_alert_time_utc"),
+                    },
+                    hf.stat().st_mtime,
+                )
         except (OSError, ValueError, yaml.YAMLError):
             continue
 
@@ -907,7 +1058,9 @@ def _collect_siem_drift_metrics(workspace: Optional[Path] = None) -> SiemDriftMe
                         metrics.avg_detection_latency_sec = round(float(val_row[1]), 3)
 
                 last_val = conn.execute(
-                    "SELECT hunt_id, technique_id, detection_latency_sec FROM detection_validations WHERE " + alert_predicate + " ORDER BY id DESC LIMIT 1"
+                    "SELECT hunt_id, technique_id, detection_latency_sec FROM detection_validations WHERE "
+                    + alert_predicate
+                    + " ORDER BY id DESC LIMIT 1"
                 ).fetchone()
                 if last_val:
                     metrics.last_verified_hunt = str(last_val[0])
@@ -946,4 +1099,3 @@ def _collect_siem_drift_metrics(workspace: Optional[Path] = None) -> SiemDriftMe
 
     _SIEM_METRICS_CACHE[cache_key] = (now, state_mtime, db_mtime, metrics)
     return metrics
-

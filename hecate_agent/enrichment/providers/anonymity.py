@@ -1,4 +1,4 @@
-"""Tor Project and IPinfo anonymity, VPN, and egress node provider."""
+"""Tor exit and IPinfo privacy/VPN classification."""
 
 from __future__ import annotations
 
@@ -17,26 +17,31 @@ logger = logging.getLogger(__name__)
 
 def _setting(name: str, default: str = "") -> str:
     from hecate_agent.orchestrator import enrichment
+
     return enrichment._setting(name, default)
 
 
 def _misp_verify_tls() -> bool:
     from hecate_agent.orchestrator import enrichment
+
     return enrichment._misp_verify_tls()
 
 
 def refang(value: str) -> str:
     from hecate_agent.orchestrator import enrichment
+
     return enrichment.refang(value)
 
 
 def _get_apex_domain(domain: str) -> str:
     from hecate_agent.orchestrator import enrichment
+
     return enrichment._get_apex_domain(domain)
 
 
 def _get_known_publishers() -> Set[str]:
     from hecate_agent.orchestrator import enrichment
+
     return getattr(enrichment, "_KNOWN_PUBLISHER_DOMAINS", set())
 
 
@@ -78,10 +83,10 @@ def query_tor_exit(ip: str) -> str:
     """Query whether an IP is an active Tor exit node."""
     clean_ip = refang(ip).strip()
     if not clean_ip:
-        return report("Invalid IP address.", 'skipped')
+        return report("Invalid IP address.", "skipped")
     if is_tor_exit_node(clean_ip):
-        return report("Tor Exit Node: Confirmed Active Exit Node [Tor Project consensus]", 'found')
-    return report("Not a Tor exit node.", 'missing')
+        return report("Tor Exit Node: Confirmed Active Exit Node [Tor Project consensus]", "found")
+    return report("Not a Tor exit node.", "missing")
 
 
 _IPINFO_CACHE: Dict[str, Tuple[float, str, Dict[str, Any]]] = {}
@@ -91,7 +96,7 @@ _IPINFO_CACHE_TTL: float = 86400.0  # 24-hour cache TTL
 
 
 def extract_ipinfo_context(ip: str) -> Dict[str, Any]:
-    """Query IPinfo.io for IP geolocation, organization, hosting/datacenter classification, and privacy."""
+    """IPinfo JSON for an IP (shared by GeoIP and Tor/Proxy)."""
     clean_ip = refang(ip).strip()
     if not clean_ip:
         return {"configured": False, "error": "Empty IP address"}
@@ -120,6 +125,9 @@ def extract_ipinfo_context(ip: str) -> Dict[str, Any]:
             data = cast(Dict[str, Any], resp.json())
             data["configured"] = True
             data["found"] = True
+            prev = _IPINFO_CACHE.get(clean_ip)
+            summary = prev[1] if prev else ""
+            _IPINFO_CACHE[clean_ip] = (now, summary, data)
             return data
         elif resp.status_code == 404:
             return {"configured": True, "found": False, "message": "Not found on IPinfo"}
@@ -131,10 +139,10 @@ def extract_ipinfo_context(ip: str) -> Dict[str, Any]:
 
 
 def query_ipinfo_ip(ip: str) -> str:
-    """Query IPinfo for ASN, organization, hosting type, and privacy flags."""
+    """IPinfo privacy/hosting classification for an IP."""
     clean_ip = refang(ip).strip()
     if not clean_ip:
-        return report("Invalid IP address.", 'skipped')
+        return report("Invalid IP address.", "skipped")
 
     data = extract_ipinfo_context(clean_ip)
     if not data.get("configured", True):
@@ -146,7 +154,7 @@ def query_ipinfo_ip(ip: str) -> str:
 
     now = time.time()
     cached = _IPINFO_CACHE.get(clean_ip)
-    if cached and (now - cached[0] < _IPINFO_CACHE_TTL):
+    if cached and cached[1] and (now - cached[0] < _IPINFO_CACHE_TTL):
         return report(cached[1])
 
     org = data.get("org") or ""
@@ -197,15 +205,15 @@ def query_ipinfo_ip(ip: str) -> str:
 
 
 def query_anonymity_proxy_ip(ip: str) -> str:
-    """Unified anonymity & proxy intelligence combining Tor Project consensus + IPinfo context."""
+    """Tor exit consensus plus IPinfo privacy tags."""
     clean_ip = refang(ip).strip()
     if not clean_ip:
-        return report("Invalid IP address.", 'skipped')
+        return report("Invalid IP address.", "skipped")
 
     try:
         addr = ipaddress.ip_address(clean_ip)
         if addr.is_private or addr.is_loopback or addr.is_link_local:
-            return report("Private/internal IP address.", 'skipped')
+            return report("Private/internal IP address.", "skipped")
     except ValueError:
         return report(f"Invalid IP address: {clean_ip}")
 
@@ -229,10 +237,8 @@ def query_anonymity_proxy_ip(ip: str) -> str:
 
     if not items:
         if tor_active:
-            return report("Tor Exit Node: Active [Tor Project]", 'found')
-        return report("Benign ISP / Non-proxy.", 'found')
+            return report("Tor Exit Node: Active [Tor Project]", "found")
+        return report("Benign ISP / Non-proxy.", "found")
 
     src_tag = f" [{', '.join(sorted(sources))}]" if sources else ""
     return report(f"{' | '.join(items)}{src_tag}")
-
-

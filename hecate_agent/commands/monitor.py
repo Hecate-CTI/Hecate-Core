@@ -58,6 +58,7 @@ from hecate_agent.commands.monitor_metrics import (
     _collect_hunts_metrics,
     _collect_purple_team_metrics,
     _collect_siem_drift_metrics,
+    clear_hunts_metrics_cache,  # noqa: F401
 )
 from hecate_agent.commands.monitor_views import (
     _STAGES,
@@ -139,6 +140,7 @@ from hecate_agent.core.workspace import workspace_root
 
 logger = logging.getLogger(__name__)
 
+
 class _MonitorModule(ModuleType):
     @property
     def console(self) -> Any:
@@ -147,6 +149,7 @@ class _MonitorModule(ModuleType):
     @console.setter
     def console(self, value: Any) -> None:
         monitor_views.console = value
+
 
 sys.modules[__name__].__class__ = _MonitorModule
 
@@ -257,6 +260,7 @@ __all__ = [
     "_siem_query_versions_table",
     "_render_dashboard",
 ]
+
 
 @click.command()
 @click.option(

@@ -14,13 +14,22 @@ from hecate_agent.orchestrator.enrichment import classify_enrichment_result, gen
         ("Not found or error.", "missing"),
         ("No results on ThreatFox.", "missing"),
         ("Not listed in VulnCheck KEV (CVE-2026-1).", "missing"),
+        ("IP not found on RDAP.", "missing"),
+        ("Domain not found on RDAP.", "missing"),
+        ("Not found on IPinfo", "missing"),
+        ("No GeoIP attributes returned.", "missing"),
         ("OTX error: HTTP 503", "errors"),
         ("URLScan.io rate limit exceeded.", "errors"),
         ("Error querying VT: timed out", "errors"),
+        ("IPinfo rate limit exceeded", "errors"),
+        ("RDAP error: HTTP 503", "errors"),
         ("SPUR_API_KEY not configured.", "unconfigured"),
         ("Private/internal IP address.", "skipped"),
         ("Invalid hash format 'x'.", "skipped"),
+        ("Invalid IP address: foo", "skipped"),
         ("Observed (malicious) | Actor: unknown", "found"),
+        ("Loc: Berlin, DE | ASN/Org: AS60729", "found"),
+        ("Net: ARTIKEL10 | Org: Artikel10 e.V.", "found"),
     ],
 )
 def test_provider_answers_are_bucketed(result: str, outcome: str) -> None:
@@ -33,6 +42,16 @@ def test_summary_fills_per_service_stats(monkeypatch: pytest.MonkeyPatch) -> Non
             monkeypatch.setattr(enrichment, name, lambda *_a, **_k: "No record.")
     monkeypatch.setattr(enrichment, "query_vt_ip", lambda ip: "Malicious hits: 3 | Threat Label: x")
     monkeypatch.setattr(enrichment, "query_shodan_ip", lambda ip: "Shodan API error: 503")
+    monkeypatch.setattr(
+        enrichment,
+        "query_geoip_ip",
+        lambda ip: "Loc: Ashburn, Virginia, US | ASN/Org: AS14618 Amazon.com, Inc.",
+    )
+    monkeypatch.setattr(
+        enrichment,
+        "query_rdap_ip",
+        lambda ip: "Net: AMAZO-4 | CIDR: 45.9.148.0/24 | Org: Amazon.com, Inc.",
+    )
     monkeypatch.setattr(enrichment, "query_epss_batch", lambda cves: {})
     monkeypatch.setattr(enrichment, "expand_ttps", lambda text: "")
 
@@ -40,10 +59,20 @@ def test_summary_fills_per_service_stats(monkeypatch: pytest.MonkeyPatch) -> Non
     generate_enrichment_summary("C2 at 45.9.148.10 and 45.9.148.11 exploiting CVE-2026-58115", stats)
 
     assert stats["VirusTotal"] == {
-        "checked": 2, "found": 2, "flagged": 2, "missing": 0, "errors": 0, "unconfigured": 0, "skipped": 0,
+        "checked": 2,
+        "found": 2,
+        "flagged": 2,
+        "missing": 0,
+        "errors": 0,
+        "unconfigured": 0,
+        "skipped": 0,
     }
     assert stats["Shodan"]["errors"] == 2
     assert stats["GreyNoise"]["missing"] == 2
+    assert stats["GeoIP"]["checked"] == 2
+    assert stats["GeoIP"]["found"] == 2
+    assert stats["RDAP"]["checked"] == 2
+    assert stats["RDAP"]["found"] == 2
     assert stats["EPSS"]["checked"] == 1
     assert stats["VulnCheck"]["checked"] == 1
 

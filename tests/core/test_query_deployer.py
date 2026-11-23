@@ -6,6 +6,8 @@ import pytest
 
 from hecate_agent.api import (
     deploy_transpiled_query,
+    get_query_deployer,
+    sync_transpiled_queries,
     sync_transpiled_query,
     undeploy_transpiled_query,
 )
@@ -536,9 +538,7 @@ class TestQueryDeployer:
         # 1. Test In-Sync
         resp_in_sync = mock.MagicMock()
         resp_in_sync.status_code = 200
-        resp_in_sync.json.return_value = {
-            "entry": [{"content": {"search": 'search Image="*/whoami.exe"'}}]
-        }
+        resp_in_sync.json.return_value = {"entry": [{"content": {"search": 'search Image="*/whoami.exe"'}}]}
 
         with (
             mock.patch.dict(
@@ -559,9 +559,7 @@ class TestQueryDeployer:
         # 2. Test Drift Detected
         resp_drift = mock.MagicMock()
         resp_drift.status_code = 200
-        resp_drift.json.return_value = {
-            "entry": [{"content": {"search": 'search Image="*/whoami.exe" | head 10'}}]
-        }
+        resp_drift.json.return_value = {"entry": [{"content": {"search": 'search Image="*/whoami.exe" | head 10'}}]}
 
         with (
             mock.patch.dict(
@@ -623,6 +621,44 @@ class TestQueryDeployer:
         assert res_sync["status"] == "dry_run"
         assert res_sync["remote_id"].startswith("Hecate_H-0868_")
 
+    def test_query_deployer_client_reuse_and_close(self):
+        deployer = QueryDeployer()
+        c1 = deployer._http()
+        c2 = deployer._http()
+        assert c1 is c2
+        assert not c1.is_closed
+
+        deployer.close()
+        assert c1.is_closed
+
+        # Entering context manager reuses and closes automatically
+        with QueryDeployer() as d:
+            c3 = d._http()
+            assert not c3.is_closed
+        assert c3.is_closed
+
+    def test_api_batch_sync_and_deployer_reuse(self):
+        items = [
+            {
+                "target": "splunk_spl",
+                "query": 'Image="*/id.exe"',
+                "hunt_id": "H-0868",
+                "title": "Batch Test 1",
+            },
+            {
+                "target": "sentinel_kql",
+                "query": 'DeviceProcessEvents | where FileName == "id.exe"',
+                "hunt_id": "H-0868",
+                "title": "Batch Test 2",
+            },
+        ]
+        with get_query_deployer() as shared_deployer:
+            results = sync_transpiled_queries(items, dry_run=True, deployer=shared_deployer)
+            assert len(results) == 2
+            assert all(r["ok"] for r in results)
+            assert results[0]["status"] == "dry_run"
+            assert results[1]["status"] == "dry_run"
+
 
 @pytest.mark.parametrize("target", QueryDeployer.SUPPORTED_TARGETS)
 @pytest.mark.parametrize("operation", ["deploy", "undeploy", "sync"])
@@ -632,8 +668,7 @@ def test_live_operations_without_credentials_fail_instead_of_simulating(target, 
         if operation == "deploy":
             payload = DeploymentPayload("H-0001", "Example", target, "", "search example")
         else:
-            payload = UndeploymentPayload("H-0001", "Example", target,
-                                          remote_id="example", query="search example")
+            payload = UndeploymentPayload("H-0001", "Example", target, remote_id="example", query="search example")
         result = getattr(deployer, operation)(payload, dry_run=False)
     assert result.status == "error"
     assert result.dry_run is False

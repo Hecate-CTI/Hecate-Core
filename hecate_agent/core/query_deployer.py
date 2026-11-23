@@ -146,6 +146,7 @@ class QueryDeployer:
 
     def __init__(self, timeout_sec: float = 30.0) -> None:
         self.timeout_sec = timeout_sec
+        self._http_clients: dict[bool, httpx.Client] = {}
         try:
             from dotenv import load_dotenv
 
@@ -154,6 +155,28 @@ class QueryDeployer:
             if ws and os.path.isdir(ws):
                 load_dotenv(os.path.join(ws, ".env"), override=False)
         except ImportError:
+            pass
+
+    def close(self) -> None:
+        """Explicitly close all cached HTTP clients."""
+        cache: dict[bool, httpx.Client] = getattr(self, "_http_clients", {})
+        for client in list(cache.values()):
+            try:
+                client.close()
+            except Exception:
+                pass
+        cache.clear()
+
+    def __enter__(self) -> QueryDeployer:
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
             pass
 
     def _http(self, *, verify: bool = True) -> httpx.Client:
@@ -370,9 +393,7 @@ class QueryDeployer:
         rg = os.getenv("SENTINEL_RESOURCE_GROUP")
         token = os.getenv("SENTINEL_BEARER_TOKEN") or os.getenv("AZURE_ACCESS_TOKEN")
 
-        search_id = self.compute_remote_id(
-            self.TARGET_SENTINEL, payload.hunt_id, payload.rule_title, payload.query
-        )
+        search_id = self.compute_remote_id(self.TARGET_SENTINEL, payload.hunt_id, payload.rule_title, payload.query)
         display_name = f"[{payload.hunt_id}] {payload.rule_title}"
 
         endpoint = (
@@ -450,9 +471,7 @@ class QueryDeployer:
             return DeploymentResult(
                 target=payload.target,
                 status="dry_run" if dry_run else "error",
-                remote_id=self.compute_remote_id(
-                    self.TARGET_CROWDSTRIKE, payload.hunt_id, payload.rule_title, payload.query
-                ),
+                remote_id=self.compute_remote_id(self.TARGET_CROWDSTRIKE, payload.hunt_id, payload.rule_title, payload.query),
                 detail=f"Validated Falcon LogScale Query payload ({reason})"
                 if dry_run
                 else f"Live operation refused: {reason}",
@@ -499,9 +518,7 @@ class QueryDeployer:
             return DeploymentResult(
                 target=payload.target,
                 status="dry_run" if dry_run else "error",
-                remote_id=self.compute_remote_id(
-                    self.TARGET_RAPID7, payload.hunt_id, payload.rule_title, payload.query
-                ),
+                remote_id=self.compute_remote_id(self.TARGET_RAPID7, payload.hunt_id, payload.rule_title, payload.query),
                 detail=f"Validated Rapid7 InsightIDR LEQL payload ({reason})"
                 if dry_run
                 else f"Live operation refused: {reason}",
@@ -549,9 +566,7 @@ class QueryDeployer:
             return DeploymentResult(
                 target=payload.target,
                 status="dry_run" if dry_run else "error",
-                remote_id=self.compute_remote_id(
-                    self.TARGET_SENTINELONE, payload.hunt_id, payload.rule_title, payload.query
-                ),
+                remote_id=self.compute_remote_id(self.TARGET_SENTINELONE, payload.hunt_id, payload.rule_title, payload.query),
                 detail=f"Validated SentinelOne Deep Visibility payload ({reason})"
                 if dry_run
                 else f"Live operation refused: {reason}",
@@ -595,9 +610,7 @@ class QueryDeployer:
         user = os.getenv("SPLUNK_USER") or "nobody"
 
         # Construct unique, URL-safe search name using slug + query hash to prevent collisions
-        search_name = self.compute_remote_id(
-            self.TARGET_SPLUNK, payload.hunt_id, payload.rule_title, payload.query
-        )
+        search_name = self.compute_remote_id(self.TARGET_SPLUNK, payload.hunt_id, payload.rule_title, payload.query)
         endpoint = f"{splunk_url}/servicesNS/{user}/{app}/saved/searches"
 
         # Format search string if not already starting with search
@@ -640,9 +653,7 @@ class QueryDeployer:
                 target=payload.target,
                 status="dry_run" if dry_run else "error",
                 remote_id=search_name,
-                detail=f"Validated Splunk Saved Search payload ({reason})"
-                if dry_run
-                else f"Live operation refused: {reason}",
+                detail=f"Validated Splunk Saved Search payload ({reason})" if dry_run else f"Live operation refused: {reason}",
                 request_summary=req_summary,
                 dry_run=dry_run,
             )
@@ -675,9 +686,7 @@ class QueryDeployer:
         api_key = os.getenv("ELASTIC_API_KEY")
 
         endpoint = f"{elastic_url}/api/detection_engine/rules"
-        rule_id = self.compute_remote_id(
-            self.TARGET_ELASTIC, payload.hunt_id, payload.rule_title, payload.query
-        )
+        rule_id = self.compute_remote_id(self.TARGET_ELASTIC, payload.hunt_id, payload.rule_title, payload.query)
         name = f"[{payload.hunt_id}] {payload.rule_title}"
 
         body = {
@@ -1022,9 +1031,7 @@ class QueryDeployer:
                 status="dry_run" if dry_run else "error",
                 remote_id=remote_id,
                 local_query=payload.query,
-                detail=f"Validated Rapid7 sync check contract ({reason})"
-                if dry_run
-                else f"Live operation refused: {reason}",
+                detail=f"Validated Rapid7 sync check contract ({reason})" if dry_run else f"Live operation refused: {reason}",
                 request_summary=req_summary,
                 dry_run=dry_run,
             )
@@ -1273,9 +1280,7 @@ class QueryDeployer:
         app = os.getenv("SPLUNK_APP") or "search"
         user = os.getenv("SPLUNK_USER") or "nobody"
 
-        search_name = self.compute_remote_id(
-            self.TARGET_SPLUNK, payload.hunt_id, payload.rule_title, payload.query
-        )
+        search_name = self.compute_remote_id(self.TARGET_SPLUNK, payload.hunt_id, payload.rule_title, payload.query)
         endpoint = f"{splunk_url}/servicesNS/{user}/{app}/saved/searches/{quote_plus(search_name)}?output_mode=json"
 
         auth_header = None
@@ -1303,9 +1308,7 @@ class QueryDeployer:
                 status="dry_run" if dry_run else "error",
                 remote_id=search_name,
                 local_query=payload.query,
-                detail=f"Validated Splunk sync check contract ({reason})"
-                if dry_run
-                else f"Live operation refused: {reason}",
+                detail=f"Validated Splunk sync check contract ({reason})" if dry_run else f"Live operation refused: {reason}",
                 request_summary=req_summary,
                 dry_run=dry_run,
             )
@@ -1432,9 +1435,7 @@ class QueryDeployer:
                 status="dry_run" if dry_run else "error",
                 remote_id=rule_id,
                 local_query=payload.query,
-                detail=f"Validated Elastic sync check contract ({reason})"
-                if dry_run
-                else f"Live operation refused: {reason}",
+                detail=f"Validated Elastic sync check contract ({reason})" if dry_run else f"Live operation refused: {reason}",
                 request_summary=req_summary,
                 dry_run=dry_run,
             )

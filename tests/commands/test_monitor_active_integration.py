@@ -74,6 +74,9 @@ def test_request_hosts_map_to_panel_labels() -> None:
     assert _api_label("localhost:8443", env) == "MISP"
     assert _api_label("127.0.0.1:11500", env) == "LLM"
     assert _api_label("rdap.verisign.com", env) == "RDAP"
+    assert _api_label("rdap.org", env) == "RDAP"
+    assert _api_label("ipinfo.io", env) == "GeoIP"
+    assert _api_label("check.torproject.org", env) == "Tor/Proxy"
     assert _api_label("raw.githubusercontent.com", env) is None
 
 
@@ -99,12 +102,12 @@ def test_traffic_counts_this_cycles_requests_per_integration(tmp_path) -> None:
 def test_footer_shows_requests_and_lookup_outcomes_for_the_active_service() -> None:
     events = [
         TrailEvent("2026-11-09 03:00:00", "c2", 10.0, "enrichment", "4 observable(s) (2 ip, 2 hash) sent to OSINT lookup"),
-        TrailEvent("2026-11-09 03:00:30", "c2", 40.0, "enrichment", "VirusTotal: 4 checked · 2 found (1 flagged) · 2 not found"),
+        TrailEvent(
+            "2026-11-09 03:00:30", "c2", 40.0, "enrichment", "VirusTotal: 4 checked · 2 found (1 flagged) · 2 not found"
+        ),
     ]
     traffic = {"VT": {"requests": 6, "ok": 5, "errors": 0, "limited": 1, "last_ts": 997.0}}
-    text = _text(
-        _active_integration_lines(None, [("VT", True, "hash/ip", "4 obs")], None, events, None, traffic, now=1000.0)
-    )
+    text = _text(_active_integration_lines(None, [("VT", True, "hash/ip", "4 obs")], None, events, None, traffic, now=1000.0))
     assert "NOW  VT · hash/ip · 4 obs" in text
     assert "6 req · 5 ok · 1 rate-limited · last 3s ago" in text
     assert "lookups: 4 checked · 2 found (1 flagged) · 2 not found" in text
@@ -122,9 +125,15 @@ def test_hosts_and_trail_names_come_from_one_registry() -> None:
     assert label_for_host("www.virustotal.com", {}) == "VT"
     assert label_for_host("localhost:8443", {"MISP_URL": "https://localhost:8443"}) == "MISP"
     assert label_for_host("rdap.verisign.com", {}) == "RDAP"
+    assert label_for_host("rdap.org", {}) == "RDAP"
+    assert label_for_host("ipinfo.io", {}) == "GeoIP"
+    assert label_for_host("check.torproject.org", {}) == "Tor/Proxy"
     assert label_for_host("raw.githubusercontent.com", {}) is None
     assert enrichment_label("VirusTotal") == "VT"
     assert enrichment_label("Passive DNS") == "PDNS"
+    assert enrichment_label("GeoIP") == "GeoIP"
+    assert enrichment_label("RDAP") == "RDAP"
+    assert BY_ID["geoip"].always_configured is True
     assert BY_ID["cisa_narrative"].cti_name == "cisa_advisories"
     assert BY_ID["misp_output"].panel == "none"
 
