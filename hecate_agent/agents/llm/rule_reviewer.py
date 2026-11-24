@@ -6,11 +6,10 @@ Word -> cmd.exe for a source that reports cmd.exe -> Word, a DNS rule for a
 sample the report says never resolves a name, and a kill-switch "write" the
 report says is only a check.
 
-The reviewer is the same local model, so its word alone is not enough to
-delete a rule. A contradiction removes a rule only when the reviewer quotes,
-verbatim, the source passage the rule contradicts; a coverage gap is reported
-only when it quotes the behaviour from the hypothesis or a passage. Anything
-unquoted is kept as an unverified note for the analyst.
+A reject verdict blocks a proposal from acceptance. Quote verification records
+whether the cited passage occurs in the source; it does not prove the review's
+interpretation and is not a condition for enforcing rejection. Revisions remain
+explicitly labeled drafts for analyst review.
 """
 
 import json
@@ -27,7 +26,7 @@ class RuleReview:
     issues: List[str] = field(default_factory=list)
     contradiction: str = ""
     quote: str = ""
-    #: The quote was found verbatim in the source passages: the contradiction is established.
+    #: The cited quote occurs in the source passages; relevance still needs review.
     verified: bool = False
 
     def to_dict(self) -> Dict[str, Any]:

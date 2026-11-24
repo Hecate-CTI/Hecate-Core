@@ -75,7 +75,7 @@ def harness(monkeypatch):
     return agent, calls, options, generations
 
 
-@pytest.mark.parametrize("verdict", ["keep", "revise", "reject"])
+@pytest.mark.parametrize("verdict", ["keep", "revise"])
 def test_accepted_rule_is_reviewed_once_and_retains_review_notes(harness, verdict):
     agent, calls, options, _ = harness
     options["verdict"] = verdict
@@ -120,7 +120,7 @@ def test_repeated_rejected_candidate_stays_rejected_without_repeat_reviews(harne
     result = agent.execute(inputs())
     assert not result.success
     assert result.data.rules == []
-    assert Counter(kind for kind, _ in calls) == {"generate": 4, "review": 1, "coverage": 1}
+    assert Counter(kind for kind, _ in calls) == {"generate": 4, "review": 1}
     assert any("reversed process chain" in reason for reason in result.data.rejected)
 
 
@@ -178,3 +178,12 @@ def test_invalid_review_after_retry_exhaustion_is_not_cached(harness):
     # gets a fresh valid verdict, rather than silently using a default "keep".
     assert Counter(kind for kind, _ in calls) == {"generate": 1, "review": 3, "coverage": 1}
     assert yaml.safe_load(result.data.rules[0].rule_yaml)["hecate_review"]["verdict"] == "keep"
+
+
+def test_unverified_rejection_never_becomes_a_rule_after_retries(harness):
+    agent, calls, options, _ = harness
+    options["verdict"] = "reject"
+    result = agent.execute(inputs())
+    assert not result.success
+    assert not result.data.rules
+    assert any("analyst advice" in reason for reason in result.data.rejected)

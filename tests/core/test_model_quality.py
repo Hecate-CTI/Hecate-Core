@@ -312,3 +312,24 @@ def test_isolated_runner_never_inherits_production_keys_or_routing(tmp_path, mon
     assert "ANTHROPIC_API_KEY" not in env
     assert "HECATE_LLM_CALL_LOG" not in env
     assert env["HECATE_WORKSPACE"] == str(tmp_path)
+
+
+def test_typed_profile_exposes_json_types_without_expected_answers():
+    case = {"instruction":"Return techniques as JSON.", "source":{"excerpt":"Untrusted source text"},
+            "checks":[{"field":"techniques","op":"set_equals","expected":["T1053.003","T1496"]},
+                      {"field":"platform","op":"equals","expected":"Linux"}]}
+    messages = messages_for(case,prompt_profile="typed-v4")
+    contract = json.loads(messages[1]["content"].split("OUTPUT JSON SCHEMA (types only, no expected answers):\n",1)[1])
+    assert contract["properties"]["techniques"] == {"type":"array","items":{"type":"string"}}
+    assert contract["properties"]["platform"] == {"type":"string"}
+    assert "T1053.003" not in json.dumps(messages)
+    assert "T1496" not in json.dumps(messages)
+    assert "Linux" not in json.dumps(messages)
+    assert "expected" not in contract and "enum" not in json.dumps(contract)
+    assert contract["additionalProperties"] is False
+
+
+def test_existing_evaluation_prompt_profiles_keep_original_messages():
+    case = small_suite()["cases"][0]
+    for profile in ("baseline-v1","checked-v2","complete-v3"):
+        assert messages_for(case,prompt_profile=profile)[1]["content"] == case["instruction"] + "\n\nSOURCE DATA:\n" + case["source"]["excerpt"]

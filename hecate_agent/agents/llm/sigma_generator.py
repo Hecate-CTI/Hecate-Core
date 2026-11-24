@@ -127,7 +127,6 @@ from hecate_agent.agents.llm.sigma.validators import (
     _platform_legit_filters,
     _pysigma_problem,
     _registered_name as _registered_name,
-    _remediate_platform_contradiction,
     _reversed_guidance_chain_problem,
     _select_for_logsource,
     _self_defeating_filter_problem,
@@ -363,6 +362,7 @@ class SigmaGeneratorAgent(LLMAgent[SigmaGenerationInput, SigmaGenerationOutput])
                     logsources_considered=logsources,
                     rejected=rejected or omitted,
                     omitted=omitted,
+                    review_gaps=review_gaps,
                 ),
                 error="no log source produced a valid rule: " + "; ".join(all_reasons),
                 warnings=warnings,
@@ -425,7 +425,8 @@ class SigmaGeneratorAgent(LLMAgent[SigmaGenerationInput, SigmaGenerationOutput])
         """Reuse generation reviews for identical rule-and-evidence prompts.
 
         Missing or failed reviews are retried here; coverage is always checked
-        against the final rule set. Only a verified source contradiction drops a rule.
+        against the final rule set. Every rejection blocks acceptance; quote verification
+        describes the evidence behind the review, not whether its verdict applies.
         """
         reviewer = RuleReviewer(
             lambda prompt, validate: self._call_llm_with_retry(
@@ -452,7 +453,7 @@ class SigmaGeneratorAgent(LLMAgent[SigmaGenerationInput, SigmaGenerationOutput])
                 if rev is None:
                     rev = reviewer.review(rule.rule_yaml, input_data.hypothesis, passages)
                 return rule, rev, None
-            except Exception as exc:  # noqa: BLE001 - a failed review keeps the rule, unreviewed
+            except Exception as exc:  # noqa: BLE001 - report review failures without accepting the rule
                 return rule, None, exc
 
         review_map: Dict[int, Any] = {}
@@ -468,23 +469,15 @@ class SigmaGeneratorAgent(LLMAgent[SigmaGenerationInput, SigmaGenerationOutput])
             rev, exc = review_map.get(id(rule), (None, None))
             if exc is not None:
                 warnings.append(f"rule review failed for {rule.title!r}: {exc}")
-                kept.append(rule)
+                rejected.append(f"{rule.logsource_category}: review unavailable for {rule.title!r}")
                 continue
             if rev is None:
-                kept.append(rule)
+                rejected.append(f"{rule.logsource_category}: review missing for {rule.title!r}")
                 continue
-            if rev.verdict == "reject" and rev.verified:
-                remediation = _remediate_platform_contradiction(rule.rule_yaml, rev.contradiction)
-                if remediation:
-                    remediated_yaml, old_prod, new_os = remediation
-                    rule.rule_yaml = remediated_yaml
-                    warnings.append(
-                        f"rule {rule.title!r} auto-remediated platform from {old_prod!r} to {new_os!r} "
-                        f"based on reviewer diagnostic"
-                    )
-                    kept.append(rule)
-                    continue
-                rejected.append(f'{rule.logsource_category}: reviewer: {rev.contradiction} (source: "{rev.quote[:160]}")')
+            if rev.verdict == "reject":
+                reason = rev.contradiction or "; ".join(rev.issues) or "Rejected during automated rule review"
+                evidence = f' (source: "{rev.quote[:160]}")' if rev.verified else " (reviewer rationale; source quote unverified)"
+                rejected.append(f"{rule.logsource_category}: reviewer: {reason}{evidence}")
                 continue
             document = yaml.safe_load(rule.rule_yaml)
             note: Dict[str, Any] = {"verdict": rev.verdict}
@@ -1201,6 +1194,7 @@ class SigmaGeneratorAgent(LLMAgent[SigmaGenerationInput, SigmaGenerationOutput])
         # Preserve the exact artifact that was reviewed, including its generated
         # UUID. Rebuilding it after validation invalidates review reuse.
         built_rules: Dict[str, Tuple[Optional[SigmaRule], Optional[str]]] = {}
+        accepted_rule_ids: set[int] = set()
         if review_cache is None:
             review_cache = {}
 
@@ -1223,6 +1217,8 @@ class SigmaGeneratorAgent(LLMAgent[SigmaGenerationInput, SigmaGenerationOutput])
                 rule, problem = built_rules[raw_key]
                 if problem:
                     problems.append(problem)
+                elif rule and rule.logsource_category != logsource:
+                    problems.append(f"{logsource}: model returned a {rule.logsource_category} rule instead")
                 elif rule and rule.logsource_category == logsource:
                     if input_data.review_rules:
                         reviewer = RuleReviewer(
@@ -1242,7 +1238,7 @@ class SigmaGeneratorAgent(LLMAgent[SigmaGenerationInput, SigmaGenerationOutput])
                             if review is None:
                                 review = reviewer.review(rule.rule_yaml, input_data.hypothesis, passages)
                                 review_cache[key] = review
-                            if review.verdict == "reject" and review.verified:
+                            if review.verdict == "reject":
                                 msg = f"The rule was rejected by review: {review.contradiction or '; '.join(review.issues)}"
                                 if review.quote:
                                     msg += f" (source: '{review.quote[:160]}')"
@@ -1251,6 +1247,7 @@ class SigmaGeneratorAgent(LLMAgent[SigmaGenerationInput, SigmaGenerationOutput])
                                 continue
                         except Exception as exc:
                             logger.warning("rule review failed during generation: %s", exc)
+                    accepted_rule_ids.add(id(rule))
                     return None  # We successfully built the requested rule!
 
             if problems:
@@ -1268,11 +1265,17 @@ class SigmaGeneratorAgent(LLMAgent[SigmaGenerationInput, SigmaGenerationOutput])
                 temperature=0.1,
                 capability="sigma_draft",
             )
+            # The retry helper returns the last response even after exhausted
+            # validation or escalation. Never let that bypass the acceptance gate.
+            problem = validate_json(output_text)
+            if problem:
+                return None, [f"{logsource}: {problem}"], []
             raw_rules = self._parse_json_response(output_text).get("rules", [])
         except Exception as exc:  # noqa: BLE001 - reported per log source, not fatal
             return None, [f"{logsource}: {exc}"], []
 
         built, problems = self._collect_rules(raw_rules, input_data, built_rules)
+        built = [rule for rule in built if id(rule) in accepted_rule_ids]
         return _select_for_logsource(built, logsource, problems)
 
     def _collect_rules(

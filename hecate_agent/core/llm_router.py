@@ -8,6 +8,7 @@ backend from ``create_provider()``.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Any, Dict, Mapping, MutableMapping, Optional
@@ -111,6 +112,17 @@ def resolve_capability_tiers(config: Optional[Dict[str, Any]] = None) -> Dict[st
             target = str(tier).strip().lower()
             if name and target in LLM_TIERS:
                 mapping[name] = target
+    raw_overrides = os.getenv("HECATE_LLM_CAPABILITY_TIERS", "")
+    if raw_overrides:
+        try:
+            overrides = json.loads(raw_overrides)
+        except ValueError as exc:
+            raise ValueError("HECATE_LLM_CAPABILITY_TIERS must be a JSON object") from exc
+        if not isinstance(overrides, dict) or any(
+            not name or tier not in LLM_TIERS for name, tier in overrides.items()
+        ):
+            raise ValueError("HECATE_LLM_CAPABILITY_TIERS values must be simple or complex")
+        mapping.update(overrides)
     return apply_demotion_locks(mapping)
 
 
