@@ -517,3 +517,17 @@ cd deploy && docker compose up -d
 ```
 
 The `.env` file is gitignored. Never commit API keys to version control.
+
+### Per-capability model routing
+
+Set `HECATE_LLM_CAPABILITY_TIERS` to a JSON object to override specific capabilities,
+for example `{"source_extraction":"complex"}`. This takes precedence over the
+workspace routing map; existing evaluation requirements for demoting critical work
+still apply. Extraction can use the cloud model while routine classification and
+summarization retain the local backend. An invalid routing object raises an error.
+
+For model comparisons, the optional `typed-v4` evaluation prompt supplies a JSON
+Schema containing only requested field names and types. It includes no expected
+answers, enums or array lengths. Existing prompt profiles, reviewed questions,
+expected answers and grading thresholds are unchanged; compare models using the
+same profile. This evaluation profile does not change production agent prompts.

@@ -211,3 +211,25 @@ def test_llm_agent_uses_router_by_default(monkeypatch: pytest.MonkeyPatch) -> No
     text = agent._call_llm("prompt", capability="hypothesis")
     assert text == "from-litellm"
     assert complex_.calls and not simple.calls
+
+
+def test_environment_can_route_extraction_to_cloud_without_moving_routine_work(monkeypatch):
+    monkeypatch.setenv("HECATE_LLM_CAPABILITY_TIERS", '{"source_extraction":"complex"}')
+    mapping = resolve_capability_tiers({"defaults":{"source_extraction":"simple"}})
+    assert mapping["source_extraction"] == "complex"
+    assert mapping["research_summarize"] == mapping["feed_classification"] == "simple"
+    assert mapping["sigma_draft"] == mapping["sigma_review"] == "complex"
+
+
+@pytest.mark.parametrize("value", ["not-json", "[]", '{"source_extraction":"cloud"}', '{"source_extraction":[]}'])
+def test_invalid_environment_routing_does_not_silently_fall_back(monkeypatch,value):
+    monkeypatch.setenv("HECATE_LLM_CAPABILITY_TIERS", value)
+    with pytest.raises(ValueError, match="HECATE_LLM_CAPABILITY_TIERS"):
+        resolve_capability_tiers()
+
+
+def test_environment_override_cannot_bypass_complex_tier_demotion_gate(monkeypatch,tmp_path):
+    monkeypatch.delenv("HECATE_LLM_ALLOW_DEMOTION",raising=False)
+    monkeypatch.setenv("HECATE_LLM_DEMOTION_GATES",str(tmp_path / "missing"))
+    monkeypatch.setenv("HECATE_LLM_CAPABILITY_TIERS", '{"sigma_draft":"simple"}')
+    assert resolve_capability_tiers()["sigma_draft"] == "complex"

@@ -56,6 +56,7 @@ PROMPT_PROFILES = {
     "baseline-v1": BASELINE_SYSTEM_PROMPT,
     "checked-v2": CHECKED_SYSTEM_PROMPT,
     "complete-v3": COMPLETE_SYSTEM_PROMPT,
+    "typed-v4": CHECKED_SYSTEM_PROMPT + " Follow the supplied output JSON Schema exactly; it describes types, not answers.",
 }
 # Candidate prompts are opt-in until their regressions and release scope are reviewed.
 DEFAULT_PROMPT_PROFILE = "baseline-v1"
@@ -149,9 +150,24 @@ def validate_suite(suite: Any) -> dict[str, Any]:
 
 def messages_for(case: dict[str, Any], *, prompt_profile: str = DEFAULT_PROMPT_PROFILE) -> list[dict[str, str]]:
     # Expected answers and reviewer notes never enter the model prompt.
+    content = case["instruction"] + "\n\nSOURCE DATA:\n" + case["source"]["excerpt"]
+    if prompt_profile == "typed-v4":
+        # Expose only the response interface. No expected values, enum values,
+        # array lengths, review notes or grading outcomes enter the prompt.
+        properties = {}
+        for check in case["checks"]:
+            value = check["expected"]
+            if check["op"] == "set_equals":
+                schema = {"type": "array", "items": {"type": "string"}}
+            else:
+                kind = {str: "string", bool: "boolean", int: "integer", float: "number", type(None): "null", dict: "object", list: "array"}.get(type(value))
+                schema = {"type": kind} if kind else {}
+            properties[check["field"]] = schema
+        contract = {"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False}
+        content += "\n\nOUTPUT JSON SCHEMA (types only, no expected answers):\n" + json.dumps(contract, sort_keys=True)
     return [
         {"role": "system", "content": prompt_for(prompt_profile)},
-        {"role": "user", "content": case["instruction"] + "\n\nSOURCE DATA:\n" + case["source"]["excerpt"]},
+        {"role": "user", "content": content},
     ]
 
 

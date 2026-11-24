@@ -204,6 +204,23 @@ def generate_sigma_with_metrics(
     result = SigmaGeneratorAgent(config=config, llm_enabled=True).execute(agent_input)
     output = result.data or SigmaGenerationOutput(logsources_considered=[])
 
+    # Defend the API/file boundary even if another generator path supplies a
+    # rejected proposal. Downstream code only receives accepted rule artifacts.
+    from hecate_agent.core.sigma_review_policy import review_block_reason
+    import yaml
+
+    accepted = []
+    for rule in output.rules:
+        reason = review_block_reason(yaml.safe_load(rule.rule_yaml))
+        if reason:
+            output.rejected.append(f"{rule.title}: reviewer: {reason}")
+        else:
+            accepted.append(rule)
+    output.rules = accepted
+    if result.success and not output.rules:
+        result.success = False
+        result.error = "no log source produced a valid rule: " + "; ".join(output.rejected)
+
     written_paths = []
     if result.success and out_dir:
         target = Path(workspace / out_dir) if (workspace and not Path(out_dir).is_absolute()) else Path(out_dir)

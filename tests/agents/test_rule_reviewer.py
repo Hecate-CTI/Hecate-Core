@@ -1,4 +1,4 @@
-"""Rule reviewer (deep-dive appendix A2): verified contradictions drop a rule; the rest is advice."""
+"""Rule reviewer (deep-dive appendix A2): rejections block acceptance even without a verified source quote."""
 
 import json
 from typing import Any, Dict, List
@@ -96,7 +96,7 @@ def test_a_verified_contradiction_drops_the_model_rule() -> None:
     assert rejected == [f'process_creation: reviewer: the source has cmd.exe starting Word (source: "{GUIDANCE}")']
 
 
-def test_unverified_revisions_are_kept_with_an_actionable_note() -> None:
+def test_unverified_revisions_are_held_back_until_corrected() -> None:
     agent = _agent(
         [
             {"verdict": "revise", "issues": ["no command-line context"], "contradiction": "maybe reversed", "quote": ""},
@@ -104,15 +104,13 @@ def test_unverified_revisions_are_kept_with_an_actionable_note() -> None:
         ]
     )
     kept, rejected, gaps, _ = agent._review_rules([_rule("Word spawning cmd")], _input())
-    assert len(kept) == 1
-    assert rejected == []
-    note = yaml.safe_load(kept[0].rule_yaml)["hecate_review"]
-    assert note["verdict"] == "revise"
-    assert note["issues"] == ["no command-line context"]
+    assert kept == []
+    assert rejected
+    assert "maybe reversed" in rejected[0]
     assert gaps == [{"behaviour": "decoy opened in Word", "quote": "opens a decoy DOCX in Word"}]
 
 
-def test_deterministic_rules_are_not_reviewed_and_a_failed_review_keeps_the_rule() -> None:
+def test_deterministic_rules_are_not_reviewed_and_a_failed_review_blocks_model_rule() -> None:
     agent = SigmaGeneratorAgent.__new__(SigmaGeneratorAgent)
     calls: List[str] = []
 
@@ -124,7 +122,8 @@ def test_deterministic_rules_are_not_reviewed_and_a_failed_review_keeps_the_rule
     kept, rejected, gaps, warnings = agent._review_rules(
         [_rule("IOC rule", origin="deterministic"), _rule("Word spawning cmd")], _input()
     )
-    assert [r.title for r in kept] == ["IOC rule", "Word spawning cmd"] and rejected == [] and gaps == []
+    assert [r.title for r in kept] == ["IOC rule"] and gaps == []
+    assert any("review unavailable" in reason for reason in rejected)
     assert len(calls) == 2  # one review (the model rule) and one coverage check
     assert any("rule review failed for 'Word spawning cmd'" in w for w in warnings)
 
@@ -151,7 +150,7 @@ def test_grounded_gaps_that_sigma_cannot_see_or_rules_already_match_are_dropped(
     assert kept == [{"behaviour": "decoy opened in Word", "quote": "opens a decoy DOCX in Word"}]
 
 
-def test_platform_contradiction_is_remediated_instead_of_rejected() -> None:
+def test_rejected_platform_rule_is_not_auto_accepted_after_unreviewed_repair() -> None:
     linux_rule_yaml = """title: Linux process on NetScaler
 logsource:
   category: process_creation
@@ -180,32 +179,9 @@ detection:
     )
     input_data = _input()
     kept, rejected, gaps, warnings = agent._review_rules([rule], input_data)
-    assert rejected == []
-    assert len(kept) == 1
-    doc = yaml.safe_load(kept[0].rule_yaml)
-    assert doc["logsource"]["product"] == "freebsd"
-    assert doc["hecate_review"]["verdict"] == "remediated"
-    assert any("auto-remediated platform" in w for w in warnings)
-
-
-def test_generation_keeps_unverified_review_advice() -> None:
-    """Neither advisory revisions nor an invented quote can veto a valid draft."""
-    for verdict in ("revise", "reject"):
-        agent = SigmaGeneratorAgent.__new__(SigmaGeneratorAgent)
-        agent._build_prompt = lambda *args: "draft"  # type: ignore
-        agent._build_rule = lambda *args: (_rule("Word spawning cmd"), None)  # type: ignore
-
-        def complete(prompt: str, validate: Any, **kwargs: Any) -> str:
-            if prompt == "draft":
-                response = json.dumps({"rules": [{}]})
-                assert validate(response) is None
-                return response
-            return json.dumps({"verdict": verdict, "issues": ["needs more detail"], "contradiction": "wrong order", "quote": "invented source passage"})
-
-        agent._call_llm_with_retry = complete  # type: ignore
-        rule, problems, _ = agent._generate_for_logsource(_input(), "process_creation")
-        assert rule is not None
-        assert problems == []
+    assert kept == []
+    assert any("FreeBSD" in reason for reason in rejected)
+    assert yaml.safe_load(rule.rule_yaml)["logsource"]["product"] == "linux"
 
 
 def test_json_extraction_from_markdown_code_fence_and_noise() -> None:
@@ -240,3 +216,49 @@ closing {extra: true}"""
     data = _json(commentary)
     assert data["verdict"] == "keep"
 
+
+
+def test_unverified_rejection_blocks_final_acceptance():
+    agent = _agent([
+        {"verdict": "reject", "issues": ["Linux rule uses Windows Python paths"], "quote": ""},
+        {"gaps": []},
+    ])
+    kept, rejected, _, _ = agent._review_rules([_rule("Broken Python rule")], _input())
+    assert kept == []
+    assert "Windows Python paths" in rejected[0]
+    assert "unverified" in rejected[0]
+
+
+def test_exhausted_retries_do_not_accept_unverified_rejection():
+    agent = SigmaGeneratorAgent.__new__(SigmaGeneratorAgent)
+    agent._build_prompt = lambda *args: "draft"
+    agent._build_rule = lambda *args: (_rule("Broken Python rule"), None)
+
+    def complete(prompt, validate, **kwargs):
+        if prompt == "draft":
+            # Match the retry helper's contract: it can return its last invalid answer.
+            return json.dumps({"rules": [{}]})
+        return json.dumps({"verdict": "reject", "issues": ["wrong platform"], "quote": ""})
+
+    agent._call_llm_with_retry = complete
+    rule, problems, _ = agent._generate_for_logsource(_input(), "process_creation")
+    assert rule is None
+    assert any("wrong platform" in problem for problem in problems)
+
+
+def test_rejected_first_candidate_cannot_hide_behind_accepted_sibling():
+    agent = SigmaGeneratorAgent.__new__(SigmaGeneratorAgent)
+    agent._build_prompt = lambda *args: "draft"
+    agent._build_rule = lambda raw, *_: (_rule(raw["title"]), None)
+
+    def complete(prompt, validate, **kwargs):
+        if prompt == "draft":
+            return json.dumps({"rules": [{"title": "Bad candidate"}, {"title": "Good candidate"}]})
+        return json.dumps({"verdict": "reject" if "Bad candidate" in prompt else "keep", "issues": ["bad platform"]})
+
+    # Include distinct titles in YAML so they are distinct reviewer prompts.
+    agent._build_rule = lambda raw, *_: (SigmaRule("process_creation", raw["title"], WORD_TO_CMD.replace("Word spawning cmd", raw["title"])), None)
+    agent._call_llm_with_retry = complete
+    rule, problems, _ = agent._generate_for_logsource(_input(), "process_creation")
+    assert rule.title == "Good candidate"
+    assert not problems

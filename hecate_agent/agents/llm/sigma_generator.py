@@ -127,7 +127,6 @@ from hecate_agent.agents.llm.sigma.validators import (
     _platform_legit_filters,
     _pysigma_problem,
     _registered_name as _registered_name,
-    _remediate_platform_contradiction,
     _reversed_guidance_chain_problem,
     _select_for_logsource,
     _self_defeating_filter_problem,
@@ -363,6 +362,7 @@ class SigmaGeneratorAgent(LLMAgent[SigmaGenerationInput, SigmaGenerationOutput])
                     logsources_considered=logsources,
                     rejected=rejected or omitted,
                     omitted=omitted,
+                    review_gaps=review_gaps,
                 ),
                 error="no log source produced a valid rule: " + "; ".join(all_reasons),
                 warnings=warnings,
@@ -425,7 +425,8 @@ class SigmaGeneratorAgent(LLMAgent[SigmaGenerationInput, SigmaGenerationOutput])
         """Reuse generation reviews for identical rule-and-evidence prompts.
 
         Missing or failed reviews are retried here; coverage is always checked
-        against the final rule set. Only a verified source contradiction drops a rule.
+        against the final rule set. Every rejection blocks acceptance; quote verification
+        describes the evidence behind the review, not whether its verdict applies.
         """
         reviewer = RuleReviewer(
             lambda prompt, validate: self._call_llm_with_retry(
@@ -452,7 +453,7 @@ class SigmaGeneratorAgent(LLMAgent[SigmaGenerationInput, SigmaGenerationOutput])
                 if rev is None:
                     rev = reviewer.review(rule.rule_yaml, input_data.hypothesis, passages)
                 return rule, rev, None
-            except Exception as exc:  # noqa: BLE001 - a failed review keeps the rule, unreviewed
+            except Exception as exc:  # noqa: BLE001 - report review failures without accepting the rule
                 return rule, None, exc
 
         review_map: Dict[int, Any] = {}
@@ -468,23 +469,15 @@ class SigmaGeneratorAgent(LLMAgent[SigmaGenerationInput, SigmaGenerationOutput])
             rev, exc = review_map.get(id(rule), (None, None))
             if exc is not None:
                 warnings.append(f"rule review failed for {rule.title!r}: {exc}")
-                kept.append(rule)
+                rejected.append(f"{rule.logsource_category}: review unavailable for {rule.title!r}")
                 continue
             if rev is None:
-                kept.append(rule)
+                rejected.append(f"{rule.logsource_category}: review missing for {rule.title!r}")
                 continue
-            if rev.verdict == "reject" and rev.verified:
-                remediation = _remediate_platform_contradiction(rule.rule_yaml, rev.contradiction)
-                if remediation:
-                    remediated_yaml, old_prod, new_os = remediation
-                    rule.rule_yaml = remediated_yaml
-                    warnings.append(
-                        f"rule {rule.title!r} auto-remediated platform from {old_prod!r} to {new_os!r} "
-                        f"based on reviewer diagnostic"
-                    )
-                    kept.append(rule)
-                    continue
-                rejected.append(f'{rule.logsource_category}: reviewer: {rev.contradiction} (source: "{rev.quote[:160]}")')
+            if rev.verdict in {"reject", "revise"}:
+                reason = rev.contradiction or "; ".join(rev.issues) or "Rejected during automated rule review"
+                evidence = f' (source: "{rev.quote[:160]}")' if rev.verified else " (reviewer rationale; source quote unverified)"
+                rejected.append(f"{rule.logsource_category}: reviewer: {reason}{evidence}")
                 continue
             document = yaml.safe_load(rule.rule_yaml)
             note: Dict[str, Any] = {"verdict": rev.verdict}
@@ -1148,6 +1141,15 @@ class SigmaGeneratorAgent(LLMAgent[SigmaGenerationInput, SigmaGenerationOutput])
                 " This hunt is scoped to appliances, which rarely run a host sensor: use this as a forensic "
                 "check on the device, or where file-integrity or EDR coverage exists for it."
             )
+        # Quoted command candidates carry source-derived OS scope, unlike a
+        # model's hint. Preserve the existing Linux-command fallback when feed
+        # metadata wrongly says Windows. Generic Unix paths must still respect
+        # an explicitly scoped macOS hunt.
+        source_platforms = input_data.platforms
+        if rule_platform in ("linux", "unix", "windows") and "macos" not in {
+            p.strip().lower() for p in source_platforms
+        }:
+            source_platforms = ["linux" if rule_platform == "unix" else rule_platform]
         document: Dict[str, Any] = {
             "title": title,
             "id": str(uuid.uuid4()),
@@ -1157,7 +1159,7 @@ class SigmaGeneratorAgent(LLMAgent[SigmaGenerationInput, SigmaGenerationOutput])
             "author": author,
             "date": date.today().isoformat(),
             "tags": [f"attack.{t.lower()}" for t in rule_techniques],
-            "logsource": self._logsource_block(category, input_data.platforms, rule_platform=rule_platform),
+            "logsource": self._logsource_block(category, source_platforms, rule_platform=rule_platform),
             "detection": detection,
             "falsepositives": [falsepositives],
             "level": level,
@@ -1201,6 +1203,7 @@ class SigmaGeneratorAgent(LLMAgent[SigmaGenerationInput, SigmaGenerationOutput])
         # Preserve the exact artifact that was reviewed, including its generated
         # UUID. Rebuilding it after validation invalidates review reuse.
         built_rules: Dict[str, Tuple[Optional[SigmaRule], Optional[str]]] = {}
+        accepted_rule_ids: set[int] = set()
         if review_cache is None:
             review_cache = {}
 
@@ -1223,6 +1226,8 @@ class SigmaGeneratorAgent(LLMAgent[SigmaGenerationInput, SigmaGenerationOutput])
                 rule, problem = built_rules[raw_key]
                 if problem:
                     problems.append(problem)
+                elif rule and rule.logsource_category != logsource:
+                    problems.append(f"{logsource}: model returned a {rule.logsource_category} rule instead")
                 elif rule and rule.logsource_category == logsource:
                     if input_data.review_rules:
                         reviewer = RuleReviewer(
@@ -1242,7 +1247,7 @@ class SigmaGeneratorAgent(LLMAgent[SigmaGenerationInput, SigmaGenerationOutput])
                             if review is None:
                                 review = reviewer.review(rule.rule_yaml, input_data.hypothesis, passages)
                                 review_cache[key] = review
-                            if review.verdict == "reject" and review.verified:
+                            if review.verdict in {"reject", "revise"}:
                                 msg = f"The rule was rejected by review: {review.contradiction or '; '.join(review.issues)}"
                                 if review.quote:
                                     msg += f" (source: '{review.quote[:160]}')"
@@ -1251,6 +1256,7 @@ class SigmaGeneratorAgent(LLMAgent[SigmaGenerationInput, SigmaGenerationOutput])
                                 continue
                         except Exception as exc:
                             logger.warning("rule review failed during generation: %s", exc)
+                    accepted_rule_ids.add(id(rule))
                     return None  # We successfully built the requested rule!
 
             if problems:
@@ -1268,11 +1274,17 @@ class SigmaGeneratorAgent(LLMAgent[SigmaGenerationInput, SigmaGenerationOutput])
                 temperature=0.1,
                 capability="sigma_draft",
             )
+            # The retry helper returns the last response even after exhausted
+            # validation or escalation. Never let that bypass the acceptance gate.
+            problem = validate_json(output_text)
+            if problem:
+                return None, [f"{logsource}: {problem}"], []
             raw_rules = self._parse_json_response(output_text).get("rules", [])
         except Exception as exc:  # noqa: BLE001 - reported per log source, not fatal
             return None, [f"{logsource}: {exc}"], []
 
         built, problems = self._collect_rules(raw_rules, input_data, built_rules)
+        built = [rule for rule in built if id(rule) in accepted_rule_ids]
         return _select_for_logsource(built, logsource, problems)
 
     def _collect_rules(
@@ -1378,7 +1390,9 @@ class SigmaGeneratorAgent(LLMAgent[SigmaGenerationInput, SigmaGenerationOutput])
 
         techniques = self._rule_techniques(raw, input_data, category)
         rule_platform: Optional[str] = raw.get("logsource_product")
-        if not rule_platform:
+        # POSIX paths are shared by Linux and macOS. They cannot select Linux
+        # when macOS is among the explicitly scoped operating systems.
+        if not rule_platform and "macos" not in {p.strip().lower() for p in input_data.platforms}:
             for _, block in blocks(detection):
                 for k, v in block.items():
                     if base_field(k).lower() in ("image", "parentimage", "commandline"):
@@ -1575,20 +1589,21 @@ class SigmaGeneratorAgent(LLMAgent[SigmaGenerationInput, SigmaGenerationOutput])
         if category == "container_runtime":
             block["product"] = "docker"
             return block
-        if rule_platform in ("linux", "unix"):
-            block["product"] = "linux"
-            return block
-        if rule_platform == "windows":
-            block["product"] = "windows"
-            return block
         # Sigma's `product` is an OS, not a vendor. Only set it when the hunt
         # is genuinely single-OS; a multi-platform hunt pinned to one product
         # would silently stop matching the others. "Containers" is not an OS:
         # a Containers + Linux hunt is a Linux hunt, and leaving the product
         # unset there lets the transpiler default it to Windows.
-        oses = {p.lower() for p in platforms} - {"containers"}
+        oses = {p.strip().lower() for p in platforms} - {"containers"}
         if len(oses) == 1 and next(iter(oses)) in ("windows", "linux", "macos"):
             block["product"] = next(iter(oses))
+            return block
+        # A model hint or path inference must not override an explicit OS.
+        # In a mixed hunt it may narrow a rule only to an OS within that scope.
+        hint = "linux" if rule_platform == "unix" else rule_platform
+        scoped_oses = oses & {"windows", "linux", "macos"}
+        if hint in ("windows", "linux", "macos") and (not scoped_oses or hint in scoped_oses):
+            block["product"] = hint
         return block
 
     @staticmethod
