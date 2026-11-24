@@ -69,6 +69,9 @@ _TECHNIQUE_RE = re.compile(r"\bT\d{4}(?:\.\d{3})?\b")
 #: The draft's "Not mapped, capability only" list (hunt_writer's Technique
 #: Evidence section): techniques named there were dropped, not claimed.
 _CAPABILITY_ONLY_RE = re.compile(r"^Not mapped, capability only[^\n]*\n(?:\s*\n)?(?:- [^\n]*\n?)*", re.M)
+#: BAS skip diagnostics: techniques mentioned in an allowlist error message were
+#: skipped, not claimed by the hunt hypothesis.
+_BAS_SKIP_RE = re.compile(r"\*\*Skipped:\*\*[^\n]+", re.M)
 
 #: Hostnames that belong to the scaffolding rather than the intelligence:
 #: the workspace's own MISP, documentation domains, and the RFC 2606 / RFC
@@ -234,9 +237,7 @@ _ACTOR_DESIGNATOR_RE = re.compile(r"\b(?:APT|UNC|FIN|TA|TEMP)[-\s]?\d{2,5}\b", r
 
 #: Malware-category nouns, shared by the collocation pattern and the
 #: all-caps sentence scan so the two cannot drift apart.
-_MALWARE_CATEGORY = (
-    "backdoor|ransomware|stealer|loader|trojan|implant|botnet|dropper|wiper|webshell|rat"
-)
+_MALWARE_CATEGORY = "backdoor|ransomware|stealer|loader|trojan|implant|botnet|dropper|wiper|webshell|rat"
 
 #: "<Name> backdoor", "<Name> ransomware" -- a capitalised token immediately
 #: before a malware-category noun is a claim about a specific family.
@@ -245,9 +246,7 @@ _MALWARE_CATEGORY = (
 #: ``re.IGNORECASE``: with one, ``[A-Z]`` matches lowercase too, and the OTX
 #: tag "chrome rat" was captured as a malware family named `chrome`. Only the
 #: category noun is case-insensitive.
-_MALWARE_COLLOCATION_RE = re.compile(
-    r"\b([A-Z][A-Za-z0-9._-]{2,30})\s+(?i:" + _MALWARE_CATEGORY + r")s?\b"
-)
+_MALWARE_COLLOCATION_RE = re.compile(r"\b([A-Z][A-Za-z0-9._-]{2,30})\s+(?i:" + _MALWARE_CATEGORY + r")s?\b")
 
 #: CamelCase family names that carry their own category suffix ("PureRAT").
 #: The lowercase run before the suffix is what keeps ordinary all-caps words
@@ -753,11 +752,7 @@ _REPORT_WORDING = {
 
 
 def _one_name_stems(name: str) -> set[str]:
-    return {
-        _stem(word)
-        for word in _WORD_RE.findall(name.lower())
-        if len(word) >= 4 and word not in _GENERIC_NAME_WORDS
-    }
+    return {_stem(word) for word in _WORD_RE.findall(name.lower()) if len(word) >= 4 and word not in _GENERIC_NAME_WORDS}
 
 
 def _name_stems(names: tuple[str, ...], technique_id: str = "") -> set[str]:
@@ -767,9 +762,7 @@ def _name_stems(names: tuple[str, ...], technique_id: str = "") -> set[str]:
     return stems
 
 
-def _names_unsupported(
-    names: tuple[str, ...], evidence_words: set[str], technique_id: str = ""
-) -> bool:
+def _names_unsupported(names: tuple[str, ...], evidence_words: set[str], technique_id: str = "") -> bool:
     """True when a technique's names carry keywords and no source uses enough of them.
 
     Deliberately lenient, because this can only tell "the sources never
@@ -796,9 +789,7 @@ def _names_unsupported(
     return True
 
 
-def technique_lacks_evidence(
-    technique_id: str, names: tuple[str, ...], cti_text: str, research_text: str = ""
-) -> bool:
+def technique_lacks_evidence(technique_id: str, names: tuple[str, ...], cti_text: str, research_text: str = "") -> bool:
     """True when neither the CTI nor the research describes this technique.
 
     The same test the audit applies to a finished draft, available before the
@@ -814,9 +805,7 @@ def technique_lacks_evidence(
         ):
             return True
         return False
-    evidence_words = set(_WORD_RE.findall(cti_text.lower())) | set(
-        _WORD_RE.findall(research_text.lower())
-    )
+    evidence_words = set(_WORD_RE.findall(cti_text.lower())) | set(_WORD_RE.findall(research_text.lower()))
     return _names_unsupported(names, evidence_words, upper)
 
 
@@ -890,7 +879,7 @@ def audit_draft(
     # asserted is stronger. The distinction is what a reviewer needs.
     # IDs listed as *not* mapped (capability only) are not claims: H-0618's
     # Grounding table listed T1113 after the draft had dropped it.
-    for technique in _TECHNIQUE_RE.findall(_CAPABILITY_ONLY_RE.sub(" ", draft_text)):
+    for technique in _TECHNIQUE_RE.findall(_BAS_SKIP_RE.sub(" ", _CAPABILITY_ONLY_RE.sub(" ", draft_text))):
         upper = technique.upper()
         fact = facts.get(upper)
 
@@ -915,12 +904,7 @@ def audit_draft(
         # technique ATT&CK lists on eight or more platforms carries no scoping
         # signal and is excluded upstream, so it never reaches here with a
         # narrow list to contradict.
-        if (
-            fact is not None
-            and fact.platforms
-            and hunt_platforms
-            and not (set(fact.platforms) & set(hunt_platforms))
-        ):
+        if fact is not None and fact.platforms and hunt_platforms and not (set(fact.platforms) & set(hunt_platforms)):
             add(
                 "technique",
                 upper,
@@ -935,9 +919,7 @@ def audit_draft(
 
         if upper in asserted_techniques:
             add("technique", upper, "asserted", "named by the source CTI" + note_suffix)
-        elif any(
-            a.startswith(upper + ".") or upper.startswith(a + ".") for a in asserted_techniques
-        ):
+        elif any(a.startswith(upper + ".") or upper.startswith(a + ".") for a in asserted_techniques):
             add(
                 "technique",
                 upper,
@@ -967,10 +949,7 @@ def audit_draft(
                 "technique",
                 upper,
                 "unsupported",
-                "nothing in the CTI or research describes {}".format(
-                    " / ".join(f"'{n}'" for n in fact.names)
-                )
-                + note_suffix,
+                "nothing in the CTI or research describes {}".format(" / ".join(f"'{n}'" for n in fact.names)) + note_suffix,
             )
         else:
             add(

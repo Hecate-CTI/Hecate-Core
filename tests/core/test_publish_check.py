@@ -71,6 +71,49 @@ def test_a_rule_fenced_in_the_hunt_is_checked_when_no_files_are_passed() -> None
     assert any(item.check == "auth_claim" for item in report.blocking())
 
 
+def test_lock_hunt_with_unvalidated_check_blocks() -> None:
+    hunt = """
+## CHECK: Execute & Analyze
+### Data Source Information
+> **UNVALIDATED — not production-ready.**
+- **Events Analyzed:** UNVALIDATED — 0 (no real execution)
+
+## KEEP: Findings & Response
+> **UNEXECUTED — KEEP is empty until a human closes findings after a real run.**
+"""
+    report = evaluate_hunt(hunt, [])
+    assert report.verdict == "block"
+    checks = {item.check for item in report.blocking()}
+    assert "incomplete_check" in checks
+    assert "incomplete_keep" in checks
+
+
+def test_finished_lock_hunt_without_stubs_passes_completeness() -> None:
+    hunt = """
+## CHECK: Execute & Analyze
+### Data Source Information
+- **Index/Data Source:** `sentinel` (lab probe)
+- **Time Range:** Past 1 day(s) (lab probe)
+- **Events Analyzed:** 0 (lab probe: `miss`)
+- **Data Quality:** Lab probe `miss` — clean sweep
+
+## KEEP: Findings & Response
+### Executive Summary
+Clean miss across the lab window; no suspicious process creation matched.
+
+### Findings
+| **Finding** | **Ticket** | **Description** |
+|-------------|-----------|-----------------|
+| — | — | No findings; clean negative |
+
+**True Positives:** 0
+**False Positives:** 0
+"""
+    report = evaluate_hunt(hunt, [("powershell", _CLEAN)])
+    assert report.verdict == "pass"
+    assert report.findings == []
+
+
 def test_a_rule_with_rejected_review_verdict_blocks() -> None:
     rejected_rule = """
 title: Contradicted HTTP2 rule
