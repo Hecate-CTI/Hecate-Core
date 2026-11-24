@@ -474,7 +474,7 @@ class SigmaGeneratorAgent(LLMAgent[SigmaGenerationInput, SigmaGenerationOutput])
             if rev is None:
                 rejected.append(f"{rule.logsource_category}: review missing for {rule.title!r}")
                 continue
-            if rev.verdict == "reject":
+            if rev.verdict in {"reject", "revise"}:
                 reason = rev.contradiction or "; ".join(rev.issues) or "Rejected during automated rule review"
                 evidence = f' (source: "{rev.quote[:160]}")' if rev.verified else " (reviewer rationale; source quote unverified)"
                 rejected.append(f"{rule.logsource_category}: reviewer: {reason}{evidence}")
@@ -1238,7 +1238,7 @@ class SigmaGeneratorAgent(LLMAgent[SigmaGenerationInput, SigmaGenerationOutput])
                             if review is None:
                                 review = reviewer.review(rule.rule_yaml, input_data.hypothesis, passages)
                                 review_cache[key] = review
-                            if review.verdict == "reject":
+                            if review.verdict in {"reject", "revise"}:
                                 msg = f"The rule was rejected by review: {review.contradiction or '; '.join(review.issues)}"
                                 if review.quote:
                                     msg += f" (source: '{review.quote[:160]}')"

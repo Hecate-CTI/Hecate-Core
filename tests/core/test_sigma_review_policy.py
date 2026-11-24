@@ -8,7 +8,7 @@ import yaml
 from hecate_agent import api
 from hecate_agent.agents.base import AgentResult
 from hecate_agent.agents.llm.sigma.models import SigmaGenerationOutput, SigmaRule
-from hecate_agent.core.sigma_review_policy import review_rejection_reason
+from hecate_agent.core.sigma_review_policy import review_block_reason
 
 
 def document(verdict="reject"):
@@ -19,14 +19,14 @@ def document(verdict="reject"):
 
 @pytest.mark.parametrize("verdict", ["reject", "REJECT", " Reject "])
 def test_rejection_does_not_require_a_source_quote(verdict):
-    assert review_rejection_reason(document(verdict)) == "Windows executable path on Linux"
+    assert review_block_reason(document(verdict)) == "Windows executable path on Linux"
 
 
-@pytest.mark.parametrize("review", [None, {}, {"verdict":"keep"}, {"verdict":"revise"}, {"verdict":"remediated"}])
+@pytest.mark.parametrize("review", [None, {}, {"verdict":"keep"}, {"verdict":"remediated"}])
 def test_other_review_states_are_not_rejections(review):
     doc = document()
     doc["hecate_review"] = review
-    assert review_rejection_reason(doc) is None
+    assert review_block_reason(doc) is None
 
 
 def test_api_cannot_write_a_rejected_rule_even_if_generator_reports_success(tmp_path, monkeypatch):
@@ -54,3 +54,7 @@ def test_api_mixed_result_only_writes_accepted_artifacts(tmp_path, monkeypatch):
     assert [rule.title for rule in result.rules] == ["Accepted"]
     assert [path.name for path in files] == ["network_connection__accepted.yml"]
     assert len(list(tmp_path.glob("*.yml"))) == 1
+
+
+def test_revision_required_is_not_accepted():
+    assert review_block_reason(document("revise")).startswith("Revision required:")

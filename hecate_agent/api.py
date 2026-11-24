@@ -206,12 +206,12 @@ def generate_sigma_with_metrics(
 
     # Defend the API/file boundary even if another generator path supplies a
     # rejected proposal. Downstream code only receives accepted rule artifacts.
-    from hecate_agent.core.sigma_review_policy import review_rejection_reason
+    from hecate_agent.core.sigma_review_policy import review_block_reason
     import yaml
 
     accepted = []
     for rule in output.rules:
-        reason = review_rejection_reason(yaml.safe_load(rule.rule_yaml))
+        reason = review_block_reason(yaml.safe_load(rule.rule_yaml))
         if reason:
             output.rejected.append(f"{rule.title}: reviewer: {reason}")
         else:

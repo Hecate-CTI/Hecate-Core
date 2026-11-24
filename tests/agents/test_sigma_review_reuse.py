@@ -75,7 +75,7 @@ def harness(monkeypatch):
     return agent, calls, options, generations
 
 
-@pytest.mark.parametrize("verdict", ["keep", "revise"])
+@pytest.mark.parametrize("verdict", ["keep"])
 def test_accepted_rule_is_reviewed_once_and_retains_review_notes(harness, verdict):
     agent, calls, options, _ = harness
     options["verdict"] = verdict
@@ -187,3 +187,12 @@ def test_unverified_rejection_never_becomes_a_rule_after_retries(harness):
     assert not result.success
     assert not result.data.rules
     assert any("analyst advice" in reason for reason in result.data.rejected)
+
+
+@pytest.mark.parametrize("verdict", ["reject", "revise"])
+def test_unapproved_rule_cannot_become_accepted_after_retry_exhaustion(harness, verdict):
+    agent, _, options, _ = harness
+    options["verdict"] = verdict
+    result = agent.execute(inputs())
+    assert not result.success
+    assert result.data.rules == []

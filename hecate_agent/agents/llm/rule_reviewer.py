@@ -8,8 +8,8 @@ report says is only a check.
 
 A reject verdict blocks a proposal from acceptance. Quote verification records
 whether the cited passage occurs in the source; it does not prove the review's
-interpretation and is not a condition for enforcing rejection. Revisions remain
-explicitly labeled drafts for analyst review.
+interpretation and is not a condition for enforcing rejection. Revisions are held back from accepted output until a corrected proposal
+passes review.
 """
 
 import json

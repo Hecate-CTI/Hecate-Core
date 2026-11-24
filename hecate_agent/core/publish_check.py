@@ -208,9 +208,9 @@ def _check_rule(name: str, raw: str) -> list[Finding]:
     add("breadth", "review", _breadth_problem(detection))
     add("breadth", "review", _or_branch_breadth_problem(detection))
     add("pysigma", "block", _pysigma_problem(raw))
-    from hecate_agent.core.sigma_review_policy import review_rejection_reason
+    from hecate_agent.core.sigma_review_policy import review_block_reason
 
-    reason = review_rejection_reason(doc)
+    reason = review_block_reason(doc)
     if reason:
         add("rule_review_rejected", "block", f"Rule was rejected during review: {reason}")
     if _SECRET_RE.search(raw):
