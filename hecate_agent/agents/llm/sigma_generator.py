@@ -1141,6 +1141,15 @@ class SigmaGeneratorAgent(LLMAgent[SigmaGenerationInput, SigmaGenerationOutput])
                 " This hunt is scoped to appliances, which rarely run a host sensor: use this as a forensic "
                 "check on the device, or where file-integrity or EDR coverage exists for it."
             )
+        # Quoted command candidates carry source-derived OS scope, unlike a
+        # model's hint. Preserve the existing Linux-command fallback when feed
+        # metadata wrongly says Windows. Generic Unix paths must still respect
+        # an explicitly scoped macOS hunt.
+        source_platforms = input_data.platforms
+        if rule_platform in ("linux", "unix", "windows") and "macos" not in {
+            p.strip().lower() for p in source_platforms
+        }:
+            source_platforms = ["linux" if rule_platform == "unix" else rule_platform]
         document: Dict[str, Any] = {
             "title": title,
             "id": str(uuid.uuid4()),
@@ -1150,7 +1159,7 @@ class SigmaGeneratorAgent(LLMAgent[SigmaGenerationInput, SigmaGenerationOutput])
             "author": author,
             "date": date.today().isoformat(),
             "tags": [f"attack.{t.lower()}" for t in rule_techniques],
-            "logsource": self._logsource_block(category, input_data.platforms, rule_platform=rule_platform),
+            "logsource": self._logsource_block(category, source_platforms, rule_platform=rule_platform),
             "detection": detection,
             "falsepositives": [falsepositives],
             "level": level,
@@ -1381,7 +1390,9 @@ class SigmaGeneratorAgent(LLMAgent[SigmaGenerationInput, SigmaGenerationOutput])
 
         techniques = self._rule_techniques(raw, input_data, category)
         rule_platform: Optional[str] = raw.get("logsource_product")
-        if not rule_platform:
+        # POSIX paths are shared by Linux and macOS. They cannot select Linux
+        # when macOS is among the explicitly scoped operating systems.
+        if not rule_platform and "macos" not in {p.strip().lower() for p in input_data.platforms}:
             for _, block in blocks(detection):
                 for k, v in block.items():
                     if base_field(k).lower() in ("image", "parentimage", "commandline"):
@@ -1578,20 +1589,21 @@ class SigmaGeneratorAgent(LLMAgent[SigmaGenerationInput, SigmaGenerationOutput])
         if category == "container_runtime":
             block["product"] = "docker"
             return block
-        if rule_platform in ("linux", "unix"):
-            block["product"] = "linux"
-            return block
-        if rule_platform == "windows":
-            block["product"] = "windows"
-            return block
         # Sigma's `product` is an OS, not a vendor. Only set it when the hunt
         # is genuinely single-OS; a multi-platform hunt pinned to one product
         # would silently stop matching the others. "Containers" is not an OS:
         # a Containers + Linux hunt is a Linux hunt, and leaving the product
         # unset there lets the transpiler default it to Windows.
-        oses = {p.lower() for p in platforms} - {"containers"}
+        oses = {p.strip().lower() for p in platforms} - {"containers"}
         if len(oses) == 1 and next(iter(oses)) in ("windows", "linux", "macos"):
             block["product"] = next(iter(oses))
+            return block
+        # A model hint or path inference must not override an explicit OS.
+        # In a mixed hunt it may narrow a rule only to an OS within that scope.
+        hint = "linux" if rule_platform == "unix" else rule_platform
+        scoped_oses = oses & {"windows", "linux", "macos"}
+        if hint in ("windows", "linux", "macos") and (not scoped_oses or hint in scoped_oses):
+            block["product"] = hint
         return block
 
     @staticmethod
