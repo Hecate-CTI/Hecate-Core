@@ -15,6 +15,59 @@ _FENCE_RE = re.compile(r"```ya?ml\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
 _SECRET_RE = re.compile(
     r"(?i)(AKIA[0-9A-Z]{16}|xox[baprs]-[0-9A-Za-z-]{10,}|-----BEGIN (?:RSA |OPENSSH )?PRIVATE KEY-----)"
 )
+# LOCK drafts that still look finished while CHECK/KEEP are stubs.
+_LOCK_MARKERS = (
+    "## CHECK:",
+    "## KEEP:",
+    "### Data Source Information",
+)
+_INCOMPLETE_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
+    (
+        "incomplete_check",
+        re.compile(r"UNVALIDATED", re.IGNORECASE),
+        "CHECK is UNVALIDATED — no real lab/SIEM execution evidence",
+    ),
+    (
+        "incomplete_keep",
+        re.compile(r"UNEXECUTED", re.IGNORECASE),
+        "KEEP is UNEXECUTED — findings not closed after a real run",
+    ),
+    (
+        "incomplete_placeholder",
+        re.compile(r"\[Human to populate\]", re.IGNORECASE),
+        "Hunt still contains '[Human to populate]' placeholders",
+    ),
+    (
+        "incomplete_placeholder",
+        re.compile(r"\[Review CTI and populate\]", re.IGNORECASE),
+        "Hunt still contains unfinished CTI placeholders",
+    ),
+    (
+        "incomplete_placeholder",
+        re.compile(r"\[To be completed after human review", re.IGNORECASE),
+        "KEEP executive summary is still a draft stub",
+    ),
+    (
+        "incomplete_placeholder",
+        re.compile(r"Draft only", re.IGNORECASE),
+        "Findings table is still marked 'Draft only'",
+    ),
+    (
+        "incomplete_check",
+        re.compile(r"not yet executed", re.IGNORECASE),
+        "Events Analyzed still says the hunt is not yet executed",
+    ),
+    (
+        "incomplete_placeholder",
+        re.compile(r"\[none mapped\s*-\s*human to populate\]", re.IGNORECASE),
+        "No MITRE techniques mapped",
+    ),
+    (
+        "incomplete_placeholder",
+        re.compile(r"\[Human to draft based on Observe", re.IGNORECASE),
+        "Hunting queries were never generated",
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -69,6 +122,10 @@ def evaluate_hunt(
     ``rules`` is ``(name, yaml)``. When it is omitted, fenced Sigma in the hunt
     body is checked instead. Query files, when the caller has them, should be
     passed here so a rule is not judged twice.
+
+    When the text looks like a LOCK hunt (CHECK/KEEP present), unfinished
+    execution stubs and human-populate placeholders are **block** findings —
+    drafts must not look publishable until CHECK and KEEP are closed for real.
     """
     findings: list[Finding] = []
     secret = _SECRET_RE.search(hunt_text or "")
@@ -76,10 +133,31 @@ def evaluate_hunt(
         findings.append(
             Finding("credential", "block", "High-confidence credential material in the hunt text")
         )
+    findings.extend(_check_lock_completeness(hunt_text or ""))
     chosen = rules if rules is not None else fenced_sigma(hunt_text)
     for name, raw in chosen:
         findings.extend(_check_rule(name, raw))
     return PublishReport(findings)
+
+
+def _looks_like_lock_hunt(hunt_text: str) -> bool:
+    return any(marker in hunt_text for marker in _LOCK_MARKERS)
+
+
+def _check_lock_completeness(hunt_text: str) -> list[Finding]:
+    if not _looks_like_lock_hunt(hunt_text):
+        return []
+    findings: list[Finding] = []
+    seen: set[str] = set()
+    for check, pattern, message in _INCOMPLETE_PATTERNS:
+        if not pattern.search(hunt_text):
+            continue
+        key = f"{check}:{message}"
+        if key in seen:
+            continue
+        seen.add(key)
+        findings.append(Finding(check, "block", message, target="hunt"))
+    return findings
 
 
 def _is_sigma(doc: Any) -> bool:
