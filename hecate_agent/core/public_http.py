@@ -15,22 +15,111 @@ MAX_REDIRECTS = 5
 # Translation prefixes can encode a private IPv4 destination in a global IPv6 address.
 TRANSLATION_PREFIXES = (ipaddress.ip_network("64:ff9b::/96"), ipaddress.ip_network("64:ff9b:1::/48"))
 
+DISALLOWED_EXTENSIONS = {
+    ".bin",
+    ".exe",
+    ".dll",
+    ".sys",
+    ".ps1",
+    ".sh",
+    ".bat",
+    ".cmd",
+    ".vbs",
+    ".js",
+    ".elf",
+    ".so",
+    ".zip",
+    ".tar",
+    ".gz",
+    ".7z",
+    ".rar",
+    ".iso",
+    ".img",
+    ".dmg",
+    ".pkg",
+    ".deb",
+    ".rpm",
+    ".apk",
+    ".dat",
+    ".payload",
+    ".scr",
+    ".msi",
+    ".hta",
+    ".vbe",
+    ".wsf",
+    ".jar",
+    ".class",
+}
+
+DISALLOWED_PATHS = {
+    "/gate.php",
+    "/c2",
+    "/beacon",
+}
+
+SKIP_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def validate_public_url(url: str) -> None:
+    """Validate that ``url`` is syntactically a safe public report URL, or raise ValueError."""
+    if not url or not isinstance(url, str):
+        raise ValueError("Public download URL cannot be empty")
+    cleaned = url.strip()
+    if len(cleaned) > 8192:
+        raise ValueError("Public download URL exceeds maximum length (8192)")
+    try:
+        parsed = urlsplit(cleaned)
+        target = httpx.URL(cleaned)
+    except Exception as exc:
+        raise ValueError("Invalid public download URL") from exc
+
+    if (
+        parsed.username is not None
+        or parsed.password is not None
+        or target.scheme not in {"http", "https"}
+        or not target.host
+        or target.port not in {None, 80 if target.scheme == "http" else 443}
+        or "%" in target.host
+    ):
+        raise ValueError("Unsafe public download URL")
+
+    host = target.host.lower()
+    if host in SKIP_HOSTS or host.endswith((".local", ".internal", ".onion")):
+        raise ValueError(f"Public download cannot target local or internal host: {host}")
+
+    try:
+        ipaddress.ip_address(host)
+        raise ValueError("Public download cannot target raw IP addresses")
+    except ValueError as err:
+        if "Public download" in str(err):
+            raise
+
+    if "." not in host:
+        raise ValueError(f"Public download requires a domain with at least one dot: {host}")
+
+    path = (parsed.path or "").lower()
+    for ext in DISALLOWED_EXTENSIONS:
+        if path.endswith(ext):
+            raise ValueError(f"Public download refuses payload extension {ext}")
+    for bad_path in DISALLOWED_PATHS:
+        if bad_path in path or path.endswith(bad_path):
+            raise ValueError(f"Public download refuses payload path {bad_path}")
+
+
+def is_safe_public_url(url: str) -> bool:
+    """True if ``url`` appears syntactically safe for public CTI report fetching."""
+    try:
+        validate_public_url(url)
+        return True
+    except (ValueError, TypeError):
+        return False
+
 
 def public_addresses(url: str) -> tuple[httpx.URL, list[str]]:
-    """Resolve once; reject credentials, non-web ports and every non-public answer."""
+    """Resolve once; reject credentials, non-web ports, payload targets, and every non-public answer."""
+    validate_public_url(url)
+    target = httpx.URL(url.strip())
     try:
-        parsed = urlsplit(url)
-        target = httpx.URL(url)
-        if (
-            len(url) > 8192
-            or parsed.username is not None
-            or parsed.password is not None
-            or target.scheme not in {"http", "https"}
-            or not target.host
-            or target.port not in {None, 80 if target.scheme == "http" else 443}
-            or "%" in target.host
-        ):
-            raise ValueError("Unsafe public download URL")
         host = target.raw_host.decode("ascii")
         answers = socket.getaddrinfo(
             host,
@@ -48,6 +137,9 @@ def public_addresses(url: str) -> tuple[httpx.URL, list[str]]:
                 not ip.is_global
                 or ip.is_multicast
                 or ip.is_reserved
+                or ip.is_loopback
+                or ip.is_private
+                or ip.is_link_local
                 or (mapped is not None and not mapped.is_global)
                 or getattr(ip, "sixtofour", None) is not None
                 or getattr(ip, "teredo", None) is not None
@@ -61,7 +153,7 @@ def public_addresses(url: str) -> tuple[httpx.URL, list[str]]:
         # Prefer IPv4 on hosts without an IPv6 route; all answers were checked.
         addresses.sort(key=lambda value: ipaddress.ip_address(value).version)
         return target, addresses
-    except (socket.gaierror, httpx.InvalidURL, UnicodeError) as exc:
+    except (socket.gaierror, UnicodeError) as exc:
         raise ValueError("Invalid or unresolvable public download URL") from exc
 
 
