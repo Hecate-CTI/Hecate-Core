@@ -19,10 +19,12 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 import time
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,6 +37,27 @@ from hecate_agent.core.telemetry_harvester import TelemetryHarvester
 logger = logging.getLogger(__name__)
 
 _UNSANDBOXED_ENV = "HECATE_ALLOW_UNSANDBOXED_EMULATION"
+
+DEFAULT_PINNED_DOCKER_IMAGE = "alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"
+DEFAULT_MEMORY_LIMIT = "256m"
+DEFAULT_CPU_LIMIT = "1.0"
+DEFAULT_PIDS_LIMIT = 64
+MAX_OUTPUT_BYTES = 2 * 1024 * 1024  # 2 MiB
+
+_SAFE_IMAGE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_./:-]*(@sha256:[a-fA-F0-9]{64})?$")
+_SAFE_LIMIT_RE = re.compile(r"^[0-9]+[kmgKMG]?$")
+_SAFE_CPU_RE = re.compile(r"^[0-9]+(\.[0-9]+)?$")
+
+
+def _truncate_output(text: Optional[str], max_bytes: int = MAX_OUTPUT_BYTES) -> str:
+    """Enforce byte output cap to prevent unbounded host memory consumption."""
+    if not text:
+        return ""
+    encoded = text.encode("utf-8", errors="replace")
+    if len(encoded) <= max_bytes:
+        return text
+    truncated = encoded[:max_bytes].decode("utf-8", errors="ignore")
+    return truncated + f"\n[truncated: output exceeded {max_bytes} bytes limit]"
 
 
 def _ptrace_unavailable(stderr: str) -> bool:
@@ -199,7 +222,9 @@ class BwrapBackend(BaseSandboxBackend):
                 timeout=timeout,
                 cwd=workdir,
             )
-            return proc.returncode, proc.stdout, proc.stderr, proc.stderr
+            stdout = _truncate_output(proc.stdout)
+            stderr = _truncate_output(proc.stderr)
+            return proc.returncode, stdout, stderr, stderr
         except subprocess.TimeoutExpired:
             return -1, "", f"Command timed out after {timeout} seconds", ""
         except Exception as exc:
@@ -207,11 +232,29 @@ class BwrapBackend(BaseSandboxBackend):
 
 
 class DockerBackend(BaseSandboxBackend):
-    """Containerized detonation using Docker or Podman."""
+    """Containerized detonation using Docker or Podman with hardened isolation."""
 
-    def __init__(self, image: str = "alpine:latest") -> None:
+    def __init__(
+        self,
+        image: Optional[str] = None,
+        memory_limit: str = DEFAULT_MEMORY_LIMIT,
+        cpu_limit: str = DEFAULT_CPU_LIMIT,
+        pids_limit: int = DEFAULT_PIDS_LIMIT,
+    ) -> None:
         self.docker_bin = shutil.which("docker") or shutil.which("podman")
-        self.image = image
+        selected_image = image or DEFAULT_PINNED_DOCKER_IMAGE
+        if not _SAFE_IMAGE_RE.match(selected_image):
+            raise ValueError(f"Invalid Docker image reference: {selected_image!r}")
+        if not _SAFE_LIMIT_RE.match(memory_limit):
+            raise ValueError(f"Invalid memory limit: {memory_limit!r}")
+        if not _SAFE_CPU_RE.match(cpu_limit):
+            raise ValueError(f"Invalid CPU limit: {cpu_limit!r}")
+        if not isinstance(pids_limit, int) or pids_limit <= 0:
+            raise ValueError(f"Invalid pids limit: {pids_limit!r}")
+        self.image = selected_image
+        self.memory_limit = memory_limit
+        self.cpu_limit = cpu_limit
+        self.pids_limit = pids_limit
 
     def name(self) -> str:
         return "docker"
@@ -240,9 +283,13 @@ class DockerBackend(BaseSandboxBackend):
 
         assert self.docker_bin is not None
 
+        container_name = f"hecate-detonate-{uuid.uuid4().hex[:12]}"
+
         cmd = [
             self.docker_bin,
             "run",
+            "--name",
+            container_name,
             "--rm",
             "-i",
             "--network",
@@ -256,6 +303,10 @@ class DockerBackend(BaseSandboxBackend):
             "ALL",
             "--user",
             "65534:65534",
+            f"--memory={self.memory_limit}",
+            f"--memory-swap={self.memory_limit}",
+            f"--cpus={self.cpu_limit}",
+            f"--pids-limit={self.pids_limit}",
             self.image,
             "sh",
             "-c",
@@ -269,10 +320,28 @@ class DockerBackend(BaseSandboxBackend):
                 text=True,
                 timeout=timeout,
             )
-            return proc.returncode, proc.stdout, proc.stderr, proc.stderr
+            stdout = _truncate_output(proc.stdout)
+            stderr = _truncate_output(proc.stderr)
+            return proc.returncode, stdout, stderr, stderr
         except subprocess.TimeoutExpired:
+            try:
+                subprocess.run(
+                    [self.docker_bin, "rm", "-f", container_name],
+                    capture_output=True,
+                    timeout=10,
+                )
+            except Exception as rm_exc:
+                logger.warning("Failed to remove timed out container %s: %s", container_name, rm_exc)
             return -1, "", f"Docker container timed out after {timeout}s", ""
         except Exception as exc:
+            try:
+                subprocess.run(
+                    [self.docker_bin, "rm", "-f", container_name],
+                    capture_output=True,
+                    timeout=10,
+                )
+            except Exception as rm_exc:
+                logger.warning("Failed to remove container %s on error: %s", container_name, rm_exc)
             return -1, "", f"Docker execution error: {exc}", ""
 
 
@@ -331,21 +400,26 @@ class SubprocessBackend(BaseSandboxBackend):
                     timeout=timeout,
                     cwd=exec_dir,
                 )
-                if (
-                    self.strace_bin
-                    and proc.returncode != 0
-                    and not proc.stdout
-                    and _ptrace_unavailable(proc.stderr)
-                ):
+                if self.strace_bin and proc.returncode != 0 and not proc.stdout and _ptrace_unavailable(proc.stderr):
                     proc = run_process_group(
                         ["sh", "-c", command],
                         text=True,
                         timeout=timeout,
                         cwd=exec_dir,
                     )
-                    return proc.returncode, proc.stdout, proc.stderr, ""
+                    return (
+                        proc.returncode,
+                        _truncate_output(proc.stdout),
+                        _truncate_output(proc.stderr),
+                        "",
+                    )
                 trace = proc.stderr if self.strace_bin else ""
-                return proc.returncode, proc.stdout, proc.stderr, trace
+                return (
+                    proc.returncode,
+                    _truncate_output(proc.stdout),
+                    _truncate_output(proc.stderr),
+                    _truncate_output(trace) if trace else "",
+                )
             except subprocess.TimeoutExpired:
                 return -1, "", f"Process timed out after {timeout}s", ""
             except Exception as exc:
@@ -408,8 +482,10 @@ class EmulationRunner:
         self,
         backend: Optional[Union[str, BaseSandboxBackend]] = None,
         filter_os_noise: bool = True,
+        require_isolated: bool = False,
     ) -> None:
         self.harvester = TelemetryHarvester(filter_os_noise=filter_os_noise)
+        self.require_isolated = require_isolated
 
         if isinstance(backend, BaseSandboxBackend):
             self.backend = backend
@@ -419,14 +495,28 @@ class EmulationRunner:
             self.backend = BwrapBackend()
         elif backend == "docker":
             self.backend = DockerBackend()
+        elif backend == "real":
+            # Explicit real-execution mode: select verified isolated backend or fail closed
+            bwrap = BwrapBackend()
+            docker = DockerBackend()
+            if bwrap.is_available():
+                self.backend = bwrap
+            elif docker.is_available():
+                self.backend = docker
+            else:
+                raise RuntimeError(
+                    "Real adversary emulation requested, but no verified isolated sandbox backend "
+                    "(bwrap or docker) is available on the host"
+                )
         elif backend == "subprocess":
             sp = SubprocessBackend()
             if sp.is_available():
                 self.backend = sp
             else:
+                if require_isolated:
+                    raise RuntimeError("Unsandboxed host execution is disabled and not isolated")
                 logger.warning(
-                    "Subprocess emulation requested but unsandboxed mode is disabled; "
-                    "using simulation backend instead"
+                    "Subprocess emulation requested but unsandboxed mode is disabled; using simulation backend instead"
                 )
                 self.backend = SimulationBackend()
         elif backend == "mock":
@@ -440,11 +530,19 @@ class EmulationRunner:
             elif docker.is_available():
                 self.backend = docker
             else:
+                if require_isolated:
+                    raise RuntimeError("No verified isolated sandbox backend (bwrap or docker) is available on the host")
                 logger.info(
-                    "No bwrap/docker sandbox available; using simulation backend "
-                    "(refusing unsandboxed host execution)"
+                    "No bwrap/docker sandbox available; using simulation backend (refusing unsandboxed host execution)"
                 )
                 self.backend = SimulationBackend()
+
+        if require_isolated:
+            if not isinstance(self.backend, (BwrapBackend, DockerBackend)) or not self.backend.is_available():
+                raise RuntimeError(
+                    f"Verified isolated sandbox backend (bwrap or docker) is required, but "
+                    f"'{self.backend.name()}' is not an available isolated sandbox backend"
+                )
 
     def run_command(
         self,
