@@ -132,3 +132,33 @@ hecate_review:
     assert report.verdict == "block"
     blocking_checks = [item.check for item in report.blocking()]
     assert "rule_review_rejected" in blocking_checks
+
+
+def test_a_rule_with_query_syntax_error_blocks(monkeypatch) -> None:
+    from hecate_agent.core.query_validator import QueryValidationResult, ValidationIssue
+    from hecate_agent.core.sigma_transpiler import SigmaTranspiler, TranspiledQuery
+
+    bad_val = QueryValidationResult(
+        target="sentinel_kql",
+        dialect="kql",
+        query="invalid kql",
+        is_valid=False,
+        sanity_score=0.2,
+        issues=[ValidationIssue(severity="error", code="SYNTAX_ERR", message="Unclosed delimiter '('")],
+    )
+    fake_res = {
+        "sentinel_kql": TranspiledQuery(
+            target="sentinel_kql",
+            platform_name="MDE",
+            dialect="kql",
+            file_extension=".kql",
+            query="invalid kql",
+            success=False,
+            validation=bad_val,
+        )
+    }
+    monkeypatch.setattr(SigmaTranspiler, "transpile", lambda self, raw: fake_res)
+    report = evaluate_hunt("Some text", [("test.yml", _CLEAN)])
+    assert report.verdict == "block"
+    checks = [item.check for item in report.blocking()]
+    assert "query_syntax" in checks

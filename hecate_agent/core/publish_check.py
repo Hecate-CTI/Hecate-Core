@@ -208,6 +208,21 @@ def _check_rule(name: str, raw: str) -> list[Finding]:
     add("breadth", "review", _breadth_problem(detection))
     add("breadth", "review", _or_branch_breadth_problem(detection))
     add("pysigma", "block", _pysigma_problem(raw))
+    try:
+        from hecate_agent.core.sigma_transpiler import PYSIGMA_AVAILABLE, SigmaTranspiler
+
+        if PYSIGMA_AVAILABLE:
+            transpiler = SigmaTranspiler()
+            res_dict = transpiler.transpile(raw)
+            for tgt, t_res in res_dict.items():
+                if t_res.validation and not t_res.validation.is_valid:
+                    add(
+                        "query_syntax",
+                        "block",
+                        f"Transpiled {tgt} query failed syntax validation: {'; '.join(t_res.validation.error_messages)}",
+                    )
+    except Exception:
+        pass
     from hecate_agent.core.sigma_review_policy import review_block_reason
 
     reason = review_block_reason(doc)

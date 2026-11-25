@@ -107,6 +107,18 @@ _ELASTIC_LINUX_MAPPING: Dict[str, str] = {
     "SourcePort": "source.port",
     "Protocol": "network.transport",
     "QueryName": "dns.question.name",
+    "Initiated": "network.direction",
+}
+
+_SENTINEL_ASIM_DNS_MAPPING: Dict[str, str] = {
+    "QueryName": "DnsQuery",
+    "DestinationIp": "DstIpAddr",
+    "SourceIp": "SrcIpAddr",
+    "DestinationPort": "DstPortNumber",
+    "SourcePort": "SrcPortNumber",
+    "QueryType": "DnsQueryType",
+    "QueryResults": "DnsResponseName",
+    "ResponseCode": "DnsResponseCode",
 }
 
 
@@ -197,6 +209,8 @@ def build_insight_idr_pipeline() -> Optional[Any]:
                         "DestinationPort": "destination_port",
                         "SourceIp": "source_address",
                         "SourcePort": "source_port",
+                        "Protocol": "protocol",
+                        "Initiated": "direction",
                         "QueryName": "query",
                         "QueryResults": "query_results",
                         "TargetObject": "registry.key",
@@ -218,7 +232,7 @@ def build_insight_idr_pipeline() -> Optional[Any]:
 
 
 def build_sentinelone_pipeline() -> Optional[Any]:
-    """Build a SentinelOne processing pipeline patched for EndpointOS detection item compatibility."""
+    """Build a SentinelOne processing pipeline patched for EndpointOS and network compatibility."""
     if not PYSIGMA_AVAILABLE or sentinelone_pipeline is None:
         return None
     try:
@@ -227,8 +241,10 @@ def build_sentinelone_pipeline() -> Optional[Any]:
             if getattr(item, "identifier", None) == "s1_fail_field_not_supported":
                 for cond in getattr(item, "field_name_conditions", []):
                     fields = getattr(cond, "fields", None)
-                    if isinstance(fields, list) and "EndpointOS" not in fields:
-                        fields.append("EndpointOS")
+                    if isinstance(fields, list):
+                        for fld in ("EndpointOS", "Initiated"):
+                            if fld not in fields:
+                                fields.append(fld)
         return pipeline
     except Exception as exc:
         logger.debug("Failed to build SentinelOne pipeline: %s", exc)
@@ -258,6 +274,7 @@ class InsightIDRBackend(TextQueryBackend):
     re_expression: ClassVar[str] = "{field}=/{regex}/i"
     re_escape_char: ClassVar[str] = "\\"
     re_escape: ClassVar[List[str]] = ["/"]
+    bool_values: ClassVar[Dict[bool, Optional[str]]] = {True: "true", False: "false"}
 
     def __init__(self, processing_pipeline: Optional[Any] = None):
         if processing_pipeline is None and PYSIGMA_AVAILABLE:
@@ -534,13 +551,13 @@ class SigmaTranspiler:
                         item = pending.pop()
                         if hasattr(item, "detection_items"):
                             pending.extend(item.detection_items)
-                        elif item.field != "QueryName":
+                        elif item.field not in _SENTINEL_ASIM_DNS_MAPPING:
                             raise ValueError(f"Sentinel ASIM DNS mapping does not support field {item.field!r}")
                 kusto_backend = _get_or_create_backend(
                     "mde_asim_dns",
                     lambda: KustoBackend(
                         processing_pipeline=ProcessingPipeline(
-                            items=[ProcessingItem(transformation=FieldMappingTransformation({"QueryName": "DnsQuery"}))]
+                            items=[ProcessingItem(transformation=FieldMappingTransformation(_SENTINEL_ASIM_DNS_MAPPING))]
                         )
                     ),
                 )
@@ -612,9 +629,16 @@ class SigmaTranspiler:
             return "\n\n".join(queries)
 
         if target == self.TARGET_SENTINELONE:
+            def _create_s1_backend() -> Any:
+                b = SentinelOneBackend()
+                pipe = build_sentinelone_pipeline()
+                if pipe is not None:
+                    b.backend_processing_pipeline = pipe
+                return b
+
             s1_backend: Any = _get_or_create_backend(
                 "sentinelone_s1ql",
-                lambda: SentinelOneBackend(processing_pipeline=build_sentinelone_pipeline()),
+                _create_s1_backend,
             )
             queries = s1_backend.convert(col)
             if not queries:
@@ -654,8 +678,8 @@ class SigmaTranspiler:
                         )
                     ),
                 )
-            elif col.rules and col.rules[0].logsource.product == "linux":
-                # ecs_windows() leaves Linux Sigma fields unchanged. Use ECS
+            elif col.rules and col.rules[0].logsource.product in {"linux", "macos", "osx"}:
+                # ecs_windows() leaves non-Windows Sigma fields unchanged. Use ECS
                 # fields explicitly and reject signals without a mapping.
                 # https://www.elastic.co/docs/reference/ecs/ecs-process
                 for rule in col.rules:
