@@ -186,3 +186,53 @@ def test_redirect_loops_and_https_downgrades_fail(monkeypatch, public_dns):
     transport(monkeypatch, lambda r: httpx.Response(302, headers={"location": "http://reports.example/"}))
     with pytest.raises(ValueError, match="downgrade"):
         ph.public_get("https://reports.example/report")
+
+
+@pytest.mark.parametrize(
+    "redirect_location",
+    [
+        "https://reports.example/malware.exe",
+        "https://reports.example/payload.bin",
+        "https://reports.example/gate.php",
+        "https://reports.example/c2",
+        "https://internal-server.local/report",
+        "https://internal-server.internal/report",
+        "https://hidden.onion/report",
+        "https://93.184.216.34/report",
+    ],
+)
+def test_redirect_to_unsafe_target_is_rejected_before_connection(monkeypatch, public_dns, redirect_location):
+    calls = []
+
+    def handle(request):
+        calls.append(str(request.url))
+        return httpx.Response(302, headers={"location": redirect_location})
+
+    transport(monkeypatch, handle)
+    with pytest.raises(ValueError):
+        ph.public_get("https://reports.example/start")
+    # Only the initial request was executed; redirect hop was blocked before connection
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("url", "is_safe"),
+    [
+        ("https://secure.example.com/advisory/2026-01", True),
+        ("http://reports.cert.org/incident.html", True),
+        ("https://192.168.1.1/report", False),
+        ("https://93.184.216.34/report", False),
+        ("https://example.com/malware.exe", False),
+        ("https://example.com/script.ps1", False),
+        ("https://example.com/gate.php", False),
+        ("https://example.com/beacon", False),
+        ("https://advisory.local/test", False),
+        ("https://advisory.internal/test", False),
+        ("https://advisory.onion/test", False),
+        ("https://nodot/test", False),
+        ("ftp://example.com/report", False),
+        ("https://example.com:8443/report", False),
+    ],
+)
+def test_is_safe_public_url(url, is_safe):
+    assert ph.is_safe_public_url(url) is is_safe

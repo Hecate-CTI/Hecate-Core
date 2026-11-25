@@ -20,14 +20,21 @@ import ipaddress
 import json
 import logging
 import re
-import socket
+import socket  # noqa: F401
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
 
 import httpx
 
-from hecate_agent.core.public_http import public_get
+from hecate_agent.core.public_http import (
+    DISALLOWED_EXTENSIONS,
+    DISALLOWED_PATHS,
+    SKIP_HOSTS,
+    is_safe_public_url,
+    public_addresses,
+    public_get,
+)
 
 from hecate_agent.core.source_extraction import SourceBudgetExceeded, SourceExtractionSession
 from hecate_agent.core.provenance import (
@@ -53,20 +60,21 @@ MAX_EXTRACTION_CHUNKS = 8
 #: Words that must match contiguously for a quoted passage to count as found.
 EVIDENCE_WINDOW = 8
 
-_SKIP_HOSTS = ("localhost", "127.0.0.1", "0.0.0.0")
 _LINK_RE = re.compile(r"https?://[^\s<>\"')\]]+")
 _CONFIDENCE_RE = re.compile(r"(?i)\b(high|medium|low)\s+confidence\b")
 
-_REFERENCE_DOMAINS = frozenset({
-    "cve.org",
-    "first.org",
-    "mitre.org",
-    "nist.gov",
-    "cisa.gov",
-    "cert.org",
-    "sans.org",
-    "owasp.org",
-})
+_REFERENCE_DOMAINS = frozenset(
+    {
+        "cve.org",
+        "first.org",
+        "mitre.org",
+        "nist.gov",
+        "cisa.gov",
+        "cert.org",
+        "sans.org",
+        "owasp.org",
+    }
+)
 
 
 def is_reference_url(val: str, source_url: str = "") -> bool:
@@ -76,11 +84,7 @@ def is_reference_url(val: str, source_url: str = "") -> bool:
     if not val or not isinstance(val, str):
         return False
     cleaned = (
-        val.strip()
-        .replace("[.]", ".")
-        .replace("[dot]", ".")
-        .replace("hxxps://", "https://")
-        .replace("hxxp://", "http://")
+        val.strip().replace("[.]", ".").replace("[dot]", ".").replace("hxxps://", "https://").replace("hxxp://", "http://")
     )
     if not (cleaned.startswith("http://") or cleaned.startswith("https://")):
         if cleaned.startswith("/"):
@@ -107,47 +111,9 @@ def is_reference_url(val: str, source_url: str = "") -> bool:
     return False
 
 
-_DISALLOWED_EXTENSIONS = {
-    ".bin",
-    ".exe",
-    ".dll",
-    ".sys",
-    ".ps1",
-    ".sh",
-    ".bat",
-    ".cmd",
-    ".vbs",
-    ".js",
-    ".elf",
-    ".so",
-    ".zip",
-    ".tar",
-    ".gz",
-    ".7z",
-    ".rar",
-    ".iso",
-    ".img",
-    ".dmg",
-    ".pkg",
-    ".deb",
-    ".rpm",
-    ".apk",
-    ".dat",
-    ".payload",
-    ".scr",
-    ".msi",
-    ".hta",
-    ".vbe",
-    ".wsf",
-    ".jar",
-    ".class",
-}
-_DISALLOWED_PATHS = {
-    "/gate.php",
-    "/c2",
-    "/beacon",
-}
-
+_DISALLOWED_EXTENSIONS = DISALLOWED_EXTENSIONS
+_DISALLOWED_PATHS = DISALLOWED_PATHS
+_SKIP_HOSTS = SKIP_HOSTS
 
 #: Cap redirect hops so a malicious Location chain cannot loop forever.
 MAX_FETCH_REDIRECTS = 5
@@ -155,62 +121,16 @@ MAX_FETCH_REDIRECTS = 5
 
 def is_safe_report_url(url: str) -> bool:
     """True if ``url`` looks like a public advisory/article and not adversary infra or a payload drop."""
-    if not url or not isinstance(url, str):
-        return False
-    try:
-        parsed = urlsplit(url.strip())
-    except Exception:
-        return False
-    if parsed.scheme not in ("http", "https") or parsed.username is not None or parsed.password is not None:
-        return False
-    host = parsed.hostname
-    if not host:
-        return False
-    host = host.lower()
-    if host in _SKIP_HOSTS or host.endswith(".local") or host.endswith(".internal") or host.endswith(".onion"):
-        return False
-    try:
-        ipaddress.ip_address(host)
-        return False  # Raw IP addresses are adversary C2/staging, not published CTI articles
-    except ValueError:
-        pass
-    if "." not in host:
-        return False
-    try:
-        port = parsed.port
-    except ValueError:
-        return False
-    if port is not None:
-        if parsed.scheme == "http" and port != 80:
-            return False
-        if parsed.scheme == "https" and port != 443:
-            return False
-    path = (parsed.path or "").lower()
-    for ext in _DISALLOWED_EXTENSIONS:
-        if path.endswith(ext):
-            return False
-    for bad_path in _DISALLOWED_PATHS:
-        if path.endswith(bad_path) or bad_path in path:
-            return False
-    return True
+    return is_safe_public_url(url)
 
 
 def _hostname_resolves_publicly(host: str) -> bool:
     """True when every resolved address for ``host`` is globally routable (blocks SSRF to LAN/metadata)."""
     try:
-        infos = socket.getaddrinfo(host, None)
-    except socket.gaierror:
+        public_addresses(f"https://{host}/")
+        return True
+    except (ValueError, Exception):
         return False
-    if not infos:
-        return False
-    for info in infos:
-        try:
-            addr = ipaddress.ip_address(info[4][0])
-        except (ValueError, IndexError, TypeError):
-            return False
-        if not addr.is_global:
-            return False
-    return True
 
 
 def assert_safe_fetch_url(url: str) -> str:
@@ -222,9 +142,10 @@ def assert_safe_fetch_url(url: str) -> str:
     cleaned = (url or "").strip()
     if not is_safe_report_url(cleaned):
         raise ValueError(f"refusing to fetch unsafe report URL: {cleaned!r}")
-    host = urlsplit(cleaned).hostname
-    if not host or not _hostname_resolves_publicly(host):
-        raise ValueError(f"refusing to fetch URL with non-public DNS resolution: {cleaned!r}")
+    try:
+        public_addresses(cleaned)
+    except ValueError as exc:
+        raise ValueError(f"refusing to fetch URL with non-public DNS resolution: {cleaned!r}") from exc
     return cleaned
 
 
@@ -320,8 +241,12 @@ class SourceEvidence:
         if not self.usage:
             if self.extraction_metrics.get("cache_hits") and not self.extraction_metrics.get("model_calls"):
                 return {
-                    "llm_calls": 0, "input_tokens": 0, "output_tokens": 0,
-                    "llm_duration_ms": 0, "models": [], "estimated_cost_usd": 0.0,
+                    "llm_calls": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "llm_duration_ms": 0,
+                    "models": [],
+                    "estimated_cost_usd": 0.0,
                     "cost_basis": "no_model_calls",
                 }
             return {}
@@ -436,12 +361,13 @@ def report_body_text(text: str) -> str:
     if not isinstance(cna, dict) or not isinstance(cna.get("descriptions"), list):
         return text
     lines = [str(cna.get("title", ""))]
-    lines.extend(str(d.get("value", "")) for d in cna["descriptions"]
-                 if isinstance(d, dict) and str(d.get("lang", "")).startswith("en"))
+    lines.extend(
+        str(d.get("value", "")) for d in cna["descriptions"] if isinstance(d, dict) and str(d.get("lang", "")).startswith("en")
+    )
     for affected in cna.get("affected") or []:
         if not isinstance(affected, dict):
             continue
-        fields = {k:v for k,v in affected.items() if k in ("vendor", "product", "platforms", "modules", "versions")}
+        fields = {k: v for k, v in affected.items() if k in ("vendor", "product", "platforms", "modules", "versions")}
         lines.append("Affected product: " + json.dumps(fields, ensure_ascii=False))
     lines.append("References:")
     lines.extend(str(r.get("url", "")) for r in cna.get("references") or [] if isinstance(r, dict))
@@ -560,7 +486,8 @@ _FURNITURE_RE = re.compile(
 )
 _SITE_CONTROL_LINE = re.compile(
     r"^(?:create (?:an? )?account|sign (?:in|up)(?: to console)?|discover aws|products|solutions|"
-    r"pricing|resources|search(?: filter: all)?|contact us|privacy policy|cookie preferences)$", re.I,
+    r"pricing|resources|search(?: filter: all)?|contact us|privacy policy|cookie preferences)$",
+    re.I,
 )
 
 
@@ -696,8 +623,6 @@ def _valid_value(kind: str, value: str) -> bool:
 
 def _routable(value: str) -> bool:
     """Whether an IPv4 value is an address another host could be seen connecting to."""
-    import ipaddress
-
     return ipaddress.ip_address(split_host_port(value.strip())[0]).is_global
 
 
@@ -1254,8 +1179,11 @@ def _contexts(text: str, value: str, limit: int = 2) -> List[str]:
 
 
 def classify_feed_indicators(
-    records: List[IndicatorRecord], evidence: "SourceEvidence", complete: Optional["Complete"] = None,
-    *, session: Optional[SourceExtractionSession] = None,
+    records: List[IndicatorRecord],
+    evidence: "SourceEvidence",
+    complete: Optional["Complete"] = None,
+    *,
+    session: Optional[SourceExtractionSession] = None,
 ) -> List[IndicatorRecord]:
     """Role and status for feed indicators the chunked pass did not classify.
 
@@ -1286,7 +1214,9 @@ def classify_feed_indicators(
         else:
             assert session is not None
             reply = session.complete(
-                messages, evidence.usage, phase="classification",
+                messages,
+                evidence.usage,
+                phase="classification",
                 validate=lambda reply: _verified_response(reply, page, page_words),
             )
     except SourceBudgetExceeded as exc:
@@ -1328,14 +1258,18 @@ def _verified_response(reply: str, page: str, page_words: str) -> bool:
         return False
     data = json.loads(match.group(0))
     return (
-        isinstance(data, dict) and isinstance(data.get("artifacts"), list)
+        isinstance(data, dict)
+        and isinstance(data.get("artifacts"), list)
         and len(artifacts) == len(data["artifacts"])
         and all(_checked(raw, page, page_words)[0] is not None for raw in artifacts)
     )
 
 
 def extract_source_evidence(
-    url: str, *, page_text: Optional[str] = None, complete: Optional[Complete] = None,
+    url: str,
+    *,
+    page_text: Optional[str] = None,
+    complete: Optional[Complete] = None,
     session: Optional[SourceExtractionSession] = None,
 ) -> SourceEvidence:
     """Fetch ``url`` (unless ``page_text`` is given) and extract verified artifacts from all of it.
@@ -1375,7 +1309,11 @@ def extract_source_evidence(
             else:
                 assert session is not None
                 reply = session.complete(
-                    messages, evidence.usage, phase="extraction", chunk=index, depth=depth,
+                    messages,
+                    evidence.usage,
+                    phase="extraction",
+                    chunk=index,
+                    depth=depth,
                     validate=lambda reply: _verified_response(reply, page, page_words),
                 )
         except SourceBudgetExceeded as exc:
@@ -1416,9 +1354,7 @@ def extract_source_evidence(
     _tie_observed_paths(evidence.artifacts, text)
     _tie_fuller_paths(evidence.artifacts)
     evidence.indicators = [
-        _to_record(a, url)
-        for a in evidence.artifacts
-        if a.kind in INDICATOR_KINDS and not is_reference_url(a.value, url)
+        _to_record(a, url) for a in evidence.artifacts if a.kind in INDICATOR_KINDS and not is_reference_url(a.value, url)
     ]
     if evidence.artifacts:
         evidence.error = ""  # a partial failure still produced verified evidence
@@ -1430,8 +1366,11 @@ def extract_source_evidence(
 
 
 def build_indicator_records(
-    cti_indicators: Dict[str, List[str]], evidence: Optional[SourceEvidence], complete: Optional[Complete] = None,
-    *, session: Optional[SourceExtractionSession] = None,
+    cti_indicators: Dict[str, List[str]],
+    evidence: Optional[SourceEvidence],
+    complete: Optional[Complete] = None,
+    *,
+    session: Optional[SourceExtractionSession] = None,
 ) -> List[IndicatorRecord]:
     """The feed's indicators, typed with whatever the primary source says about them.
 

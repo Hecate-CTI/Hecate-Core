@@ -24,6 +24,9 @@ _URL_RE = re.compile(r"https?://[^\s<>\"')\]]+")
 
 def scrape_url_text(url: str) -> str:
     """Fetch a report page and return its visible text, or "" on any failure."""
+    if not is_safe_report_url(url):
+        logger.warning(f"Refusing to scrape unsafe report URL: {url}")
+        return ""
     try:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
