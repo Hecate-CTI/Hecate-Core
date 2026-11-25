@@ -545,11 +545,12 @@ def run_dynamic_atomic_emulation(
     technique_id: str,
     backend: str = "simulation",
     platforms: Optional[List[str]] = None,
+    require_isolated: bool = False,
 ) -> Any:
     """Execute dynamic adversary emulation for a technique and return an EmulationResult."""
     from hecate_agent.core.emulation_runner import EmulationRunner
 
-    runner = EmulationRunner(backend=backend)
+    runner = EmulationRunner(backend=backend, require_isolated=require_isolated)
     return runner.run_technique(technique_id, platforms=platforms)
 
 
