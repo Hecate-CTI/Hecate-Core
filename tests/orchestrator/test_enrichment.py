@@ -111,6 +111,22 @@ def test_extract_indicators_filters_publisher_and_reference_domains():
     assert "paloaltonetworks.com" not in inds["domains"]
 
 
+def test_extract_indicators_filters_badge_and_developer_domains():
+    text = (
+        "C2 server was command.attacker-infra.pro\n"
+        "Badge link: [![Build](https://img.shields.io/badge/build-passing-brightgreen)](https://shields.io)\n"
+        "Coverage: [![Coverage](https://codecov.io/gh/org/repo/branch/main/graph/badge.svg)](https://codecov.io)\n"
+        "Package: https://badge.fury.io/py/tool"
+    )
+    inds = extract_indicators(text)
+    assert "command.attacker-infra.pro" in inds["domains"]
+    assert "img.shields.io" not in inds["domains"]
+    assert "shields.io" not in inds["domains"]
+    assert "codecov.io" not in inds["domains"]
+    assert "badge.fury.io" not in inds["domains"]
+
+
+
 def test_extract_indicators_treats_link_only_hosts_as_citations():
     """H-0830: the advisories a report hyperlinks became DNS and proxy IOCs,
     and a NetScaler build number became an address."""

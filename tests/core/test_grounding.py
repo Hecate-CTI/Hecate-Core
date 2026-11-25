@@ -954,3 +954,33 @@ def test_graph_windows_net_cloud_service_endpoint() -> None:
     assert claim.status == "derived"
 
 
+def test_asset_filenames_and_scaffolding_domains_not_flagged_as_fabricated() -> None:
+    """Graphic assets (.svg, .png) and badge/CI scaffolding domains are not audited as ungrounded domains."""
+    from hecate_agent.core.grounding import _looks_like_a_filename, _scaffolding, audit_draft
+
+    assert _looks_like_a_filename("20differential-success.svg")
+    assert _looks_like_a_filename("license-mit-blue.svg")
+    assert _looks_like_a_filename("avatar.png")
+    assert not _looks_like_a_filename("malicious-c2.com")
+
+    assert _scaffolding("img.shields.io")
+    assert _scaffolding("shields.io")
+    assert _scaffolding("badge.fury.io")
+    assert _scaffolding("codecov.io")
+    assert not _scaffolding("malicious-c2.com")
+
+    draft = (
+        "```yaml\ntitle: Web Exploit File Artifacts\n"
+        "logsource:\n  category: file_event\n"
+        "detection:\n  selection:\n"
+        "    TargetFilename|endswith:\n"
+        "      - /badges/license-mit-blue.svg\n"
+        "      - logo.png\n"
+        "  condition: selection\n```\n"
+    )
+    report = audit_draft(draft_text=draft, cti_text="Actor deployed web shell.")
+    assert report.is_clean
+    assert not any(c.value in ("license-mit-blue.svg", "logo.png") for c in report.claims)
+
+
+

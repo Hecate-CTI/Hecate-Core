@@ -43,7 +43,22 @@ SOURCE_PAGE_ROLE = "source_page"
 #: example.org (RFC 2606). Assigned only by ``mark_placeholders``: H-0023's only
 #: rules matched the README's "--target https://artifactory.client.example.com".
 PLACEHOLDER_ROLE = "placeholder"
-_PLACEHOLDER_DOMAINS = ("example.com", "example.net", "example.org")
+_PLACEHOLDER_DOMAINS = (
+    "example.com",
+    "example.net",
+    "example.org",
+    "example.test",
+    "example.edu",
+    "shields.io",
+    "badge.fury.io",
+    "badgen.net",
+    "codecov.io",
+    "coveralls.io",
+    "travis-ci.org",
+    "travis-ci.com",
+    "readthedocs.org",
+    "readthedocs.io",
+)
 STATUSES = ("active", "historical", "unknown")
 CONFIDENCES = ("high", "medium", "low", "unknown")
 
@@ -96,12 +111,44 @@ class IndicatorRecord:
         return record
 
 
+_IMAGE_AND_ASSET_EXTENSIONS = (
+    ".svg",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".ico",
+    ".webp",
+    ".bmp",
+    ".tiff",
+    ".tif",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".otf",
+    ".eot",
+    ".mp4",
+    ".webm",
+    ".mp3",
+    ".wav",
+    ".css",
+)
+
+
 def well_formed(value: str, rtype: str) -> bool:
-    """False for a hash of the wrong length or alphabet for its type.
+    """False for a hash of the wrong length or alphabet for its type, or non-domain assets.
 
     H-0022's hash rule carried a 39-character "SHA1" and a 63-character
     "SHA256": the hypothesis model's copies of real hashes, one digit short.
     """
+    if rtype in ("domain", "hostname"):
+        val = str(value).lower().strip(".")
+        if any(val.endswith(ext) for ext in _IMAGE_AND_ASSET_EXTENSIONS):
+            return False
+        parts = val.split(".")
+        if len(parts) < 2 or any(not p for p in parts):
+            return False
+        return True
     if rtype not in _HASH_LENGTHS:
         return True
     text = str(value).strip()
