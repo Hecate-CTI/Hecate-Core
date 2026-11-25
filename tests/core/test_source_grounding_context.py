@@ -7,6 +7,7 @@ import pytest
 from hecate_agent.api import extract_indicators
 from hecate_agent.core import source_evidence as se
 from hecate_agent.core.provenance import routable_indicators
+from hecate_agent.core.platform_evidence import platform_evidence
 from hecate_agent.core.technique_evidence import map_behaviours, technique_support
 
 REVISION = "a" * 40  # Synthetic Git SHA1; no live patch or sample lookup.
@@ -91,3 +92,32 @@ def test_context_does_not_suppress_a_separate_observed_download_or_persistence()
     observed = {e.technique_id for e in map_behaviours([("source", text)]) if e.status == "observed"}
     assert "T1105" in observed
     assert technique_support("T1053.003", ["Cron"], text).status == "observed"
+
+
+def test_cve_json_schema_and_enrichment_do_not_become_platform_evidence() -> None:
+    record = {"dataType": "CVE_RECORD", "containers": {
+        "cna": {"descriptions": [{"lang": "en", "value": "mod_http2 assign_headers race allows RCE."}],
+                "affected": [{"product": "Apache HTTP Server", "versions": [{"version": "2.4.70"}]}],
+                "references": [{"url": PATCH}]},
+        "adp": [{"generator": "docker kubernetes AWS CloudTrail metadata"}],
+    }}
+    text = se.report_body_text(json.dumps(record))
+    assert "mod_http2 assign_headers" in text and "2.4.70" in text and PATCH in text
+    assert '"containers"' not in text and "CloudTrail" not in text
+    assert platform_evidence([text]).supported == []
+    seen = []
+    evidence = se.extract_source_evidence("https://example.com/cve", page_text=json.dumps(record),
+        complete=lambda messages: seen.append(messages[-1]["content"]) or '{"artifacts": []}')
+    assert evidence.text == text
+    assert seen and all('"containers"' not in prompt for prompt in seen)
+
+
+def test_reference_urls_cannot_establish_platform_scope() -> None:
+    assert platform_evidence(["References: https://aws.amazon.com/cloud/ec2/linux/"]).supported == []
+    assert "IaaS" in platform_evidence(["The attacker used AWS CloudTrail and EC2 to discover cloud hosts."]).supported
+
+
+@pytest.mark.parametrize("text", ['{"containers": null}', '{"dataType":"CVE_RECORD","containers":null}',
+    '{"dataType":"CVE_RECORD","containers":{"cna":{"descriptions":null}}}', 'ordinary report'])
+def test_non_cve_or_malformed_documents_are_left_intact(text: str) -> None:
+    assert se.report_body_text(text) == text

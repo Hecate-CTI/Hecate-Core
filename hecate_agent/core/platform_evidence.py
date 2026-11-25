@@ -141,6 +141,7 @@ def platform_evidence(texts: List[str]) -> PlatformEvidence:
     found: Dict[str, Dict[str, str]] = {}
     patterns = [(p, m) for p, markers in _MARKERS.items() for m in markers]
     patterns += [(platform, rf"\b{re.escape(name)}\b") for name, platform in _NAMES.items()]
+    texts = [re.sub(r"\[[^\]]*\]\([^)]*\)|https?://\S+", " ", text) for text in texts]
     actor_material = any(actor_material_report(text) for text in texts)
     for sentence in (s for text in texts for s in sentences(text)):
         for platform, pattern in patterns:

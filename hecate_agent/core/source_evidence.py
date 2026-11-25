@@ -421,6 +421,33 @@ def github_readme_text(url: str, timeout: float = 20.0) -> str:
     return text if len(text) >= 100 else ""
 
 
+def report_body_text(text: str) -> str:
+    """CVE JSON's CNA narrative and affected products, without its schema/enrichment envelope."""
+    try:
+        record = json.loads(text)
+    except (ValueError, TypeError):
+        return text
+    if not isinstance(record, dict) or record.get("dataType") != "CVE_RECORD":
+        return text
+    containers = record.get("containers")
+    if not isinstance(containers, dict):
+        return text
+    cna = containers.get("cna")
+    if not isinstance(cna, dict) or not isinstance(cna.get("descriptions"), list):
+        return text
+    lines = [str(cna.get("title", ""))]
+    lines.extend(str(d.get("value", "")) for d in cna["descriptions"]
+                 if isinstance(d, dict) and str(d.get("lang", "")).startswith("en"))
+    for affected in cna.get("affected") or []:
+        if not isinstance(affected, dict):
+            continue
+        fields = {k:v for k,v in affected.items() if k in ("vendor", "product", "platforms", "modules", "versions")}
+        lines.append("Affected product: " + json.dumps(fields, ensure_ascii=False))
+    lines.append("References:")
+    lines.extend(str(r.get("url", "")) for r in cna.get("references") or [] if isinstance(r, dict))
+    return "\n".join(lines).strip()
+
+
 def fetch_page_text(url: str, timeout: float = 20.0) -> str:
     """Visible text of a report page, or raise on any failure.
 
@@ -453,7 +480,7 @@ def fetch_page_text(url: str, timeout: float = 20.0) -> str:
                 if results and isinstance(results[0], dict) and results[0].get("raw_content"):
                     content = str(results[0]["raw_content"]).strip()
                     if len(content) >= 100:
-                        return strip_page_furniture(strip_repeated_body(content))[:MAX_PAGE_CHARS]
+                        return strip_page_furniture(strip_repeated_body(report_body_text(content)))[:MAX_PAGE_CHARS]
         except Exception:
             pass
 
@@ -472,6 +499,9 @@ def fetch_page_text(url: str, timeout: float = 20.0) -> str:
     }
     response = _safe_get_following_redirects(safe_url, timeout=timeout, headers=headers)
     html = response.text
+    report_body = report_body_text(html)
+    if report_body != html:
+        return strip_page_furniture(strip_repeated_body(report_body))[:MAX_PAGE_CHARS]
 
     soup = BeautifulSoup(html, "html.parser")
     for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
@@ -1323,7 +1353,7 @@ def extract_source_evidence(
     except (httpx.HTTPError, ValueError) as exc:
         evidence.error = f"fetch failed: {exc}"
         return evidence
-    text = strip_page_furniture(strip_repeated_body(text))
+    text = strip_page_furniture(strip_repeated_body(report_body_text(text)))
     evidence.text = text
     evidence.chars = len(text)
     page = normalise(text)
