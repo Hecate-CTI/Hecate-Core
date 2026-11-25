@@ -59,7 +59,6 @@ MAX_EXTRACTION_CHUNKS = 8
 #: Words that must match contiguously for a quoted passage to count as found.
 EVIDENCE_WINDOW = 8
 
-_SKIP_HOSTS = ("localhost", "127.0.0.1", "0.0.0.0")
 _LINK_RE = re.compile(r"https?://[^\s<>\"')\]]+")
 _CONFIDENCE_RE = re.compile(r"(?i)\b(high|medium|low)\s+confidence\b")
 
