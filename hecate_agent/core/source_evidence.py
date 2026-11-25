@@ -528,10 +528,23 @@ _FURNITURE_RE = re.compile(
     + r"\s*:?$",
     re.IGNORECASE | re.MULTILINE,
 )
+_SITE_CONTROL_LINE = re.compile(
+    r"^(?:create (?:an? )?account|sign (?:in|up)(?: to console)?|discover aws|products|solutions|"
+    r"pricing|resources|search(?: filter: all)?|contact us|privacy policy|cookie preferences)$", re.I,
+)
 
 
 def strip_page_furniture(text: str) -> str:
     """The page text before its related-content block, when one appears after the article body."""
+    # Extractors sometimes retain Markdown navigation even after HTML nav
+    # removal. Remove standalone site controls, never their occurrence in prose.
+    lines = []
+    for line in text.splitlines():
+        label = re.sub(r"^\s*(?:[-*+]\s+|#{1,6}\s+)", "", line).strip()
+        link = re.fullmatch(r"\[([^\]]+)\]\(https?://[^\s]+\)", label)
+        if not _SITE_CONTROL_LINE.fullmatch(link[1] if link else label):
+            lines.append(line)
+    text = "\n".join(lines)
     for match in _FURNITURE_RE.finditer(text):
         if match.start() > len(text) * 0.4:  # a heading near the top is navigation, not the tail
             return text[: match.start()].rstrip()
@@ -784,6 +797,11 @@ _NON_FILE_LABEL = re.compile(
 
 def non_file_passage(text: str, value: str) -> str:
     """The passage showing a hash-shaped value is a token, key or fingerprint, or "" when nothing says so."""
+    from hecate_agent.core.provenance import revision_reference_passage
+
+    revision = revision_reference_passage(text, value)
+    if revision:
+        return revision
     lines = refang(text or "").split("\n")
     needle = value.lower()
     for index, line in enumerate(lines):
@@ -1305,6 +1323,7 @@ def extract_source_evidence(
     except (httpx.HTTPError, ValueError) as exc:
         evidence.error = f"fetch failed: {exc}"
         return evidence
+    text = strip_page_furniture(strip_repeated_body(text))
     evidence.text = text
     evidence.chars = len(text)
     page = normalise(text)

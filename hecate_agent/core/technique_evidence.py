@@ -270,7 +270,20 @@ _DEFENDER_ADVICE_RE = re.compile(
     r"|(is|are) (strongly )?recommended|(defenders|administrators|admins) should"
     r"|if (it is|it's|they are) not (needed|required|in use)|enable authentication"
     r"|upgrade to (version |v)?\d|apply the (vendor )?(patch|update|fix)"
-    r"|deploy (?:fleet-wide|across|via|using))\b"
+    r"|deploy (?:fleet-wide|across|via|using)|(?:use|install) (?:a |the )?browser extensions? "
+    r"(?:such as|like)|mitigation browser add-ons?)\b"
+)
+# Vendor support terms and generic mechanism definitions do not describe an
+# adversary action. Keep this specific: "download" or "account" alone may be
+# genuine behavior, and a separate incident sentence must still count.
+_SUPPORT_POLICY_RE = re.compile(
+    r"\bcustomers? (?:may|can|should) download only software\b"
+    r"|\b(?:valid|software) license\b.{0,80}\b(?:download|procured|reseller)\b"
+    r"|\b(?:create an? (?:aws )?account|sign (?:in|up))\b.{0,80}\b(?:free tier|billing|console)\b"
+)
+_MECHANISM_DEFINITION_RE = re.compile(
+    r"\b(?:background task management|btm)\b.{0,100}\b(?:manages?|supports?|includes?|such as|used to track)\b"
+    r".{0,100}\b(?:launchagents?|login items?|cron ?jobs?)\b"
 )
 #: Segments longer than this are judged, and quoted, by a window around the
 #: match: scraped headings carry no punctuation, so unrelated sections can
@@ -299,6 +312,8 @@ def sentence_status(sentence: str, actor_material: bool = False, primary_actor: 
     ``actor_material``: the report was written from the actor's own files (:func:`actor_material_report`).
     """
     lowered = sentence.lower()
+    if _SUPPORT_POLICY_RE.search(lowered) or _MECHANISM_DEFINITION_RE.search(lowered):
+        return "context"
     # Analyst constraints are not observations of the mentioned behavior.
     if re.match(r"^(?:do not|never)\s+(?:infer|claim|label|manufacture|assert)\b", lowered):
         return "context"

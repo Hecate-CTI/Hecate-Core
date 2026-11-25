@@ -63,6 +63,14 @@ STATUSES = ("active", "historical", "unknown")
 CONFIDENCES = ("high", "medium", "low", "unknown")
 
 HASH_TYPES = ("md5", "sha1", "sha256", "imphash")
+
+_REVISION_URL = re.compile(
+    r"https?://(?:www\.)?(?:github\.com|gitlab\.com|bitbucket\.org)/[^\s<>\"']+?/"
+    r"(?:commit|commits)/(?P<revision>[a-f0-9]{64}|[a-f0-9]{40})(?![a-f0-9])",
+    re.IGNORECASE,
+)
+
+
 _HASH_LENGTHS = {"md5": 32, "sha1": 40, "sha256": 64, "imphash": 32}
 _HEX_RE = re.compile(r"^[0-9a-f]+$", re.IGNORECASE)
 NETWORK_TYPES = ("ipv4", "ipv6", "domain", "hostname", "url")
@@ -159,6 +167,25 @@ def refang(value: str) -> str:
     """Undo report defanging ("hxxp", "[.]", "(.)") so the value matches telemetry."""
     value = value.replace("[.]", ".").replace("(.)", ".").replace("[:]", ":")
     return re.sub(r"hxxp", "http", value, flags=re.IGNORECASE)
+
+
+def revision_reference_passage(text: str, value: str) -> str:
+    """Return a patch URL only when every occurrence of the digest is a revision.
+
+    A separately listed sample digest keeps its file interpretation. A GitHub
+    blob filename is also not a commit reference.
+    """
+    text = refang(text or "")
+    mentions = list(re.finditer(r"(?<![a-f0-9])" + re.escape(value) + r"(?![a-f0-9])", text, re.I))
+    revisions = [m for m in _REVISION_URL.finditer(text) if m.group("revision").lower() == value.lower()]
+    reference_spans = {url.span("revision") for url in revisions}
+    for url in revisions:
+        label = re.search(r"\[(" + re.escape(value) + r")\]\($", text[:url.start()], re.I)
+        if label:
+            reference_spans.add(label.span(1))
+    if mentions and all(m.span() in reference_spans for m in mentions):
+        return revisions[0].group()
+    return ""
 
 
 def split_host_port(value: str) -> Tuple[str, Optional[int]]:

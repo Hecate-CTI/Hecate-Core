@@ -13,7 +13,7 @@ import httpx
 from hecate_agent.enrichment.constants import _KNOWN_PUBLISHER_DOMAINS
 from hecate_agent.enrichment.result import OUTCOMES as ENRICHMENT_OUTCOMES
 from hecate_agent.enrichment.result import classify_enrichment_result
-from hecate_agent.core.provenance import is_valid_ipv4, trim_shell_tail
+from hecate_agent.core.provenance import is_valid_ipv4, revision_reference_passage, trim_shell_tail
 from hecate_agent.core.workspace import load_workspace_env
 
 from hecate_agent.enrichment.providers.virustotal import (
@@ -401,7 +401,10 @@ def extract_indicators(text: str) -> Dict[str, List[str]]:
     domain_re = rf"\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{{0,61}}[a-zA-Z0-9])?\.)+(?:{tlds})\b(?!\.[a-zA-Z0-9])"
     indicators = {
         "ips": list(set(re.findall(r"\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b", clean_text))),
-        "hashes": list(set(re.findall(r"\b[a-fA-F0-9]{32,64}\b", clean_text))),
+        "hashes": [
+            h for h in dict.fromkeys(re.findall(r"\b[a-fA-F0-9]{32,64}\b", clean_text))
+            if not revision_reference_passage(clean_text, h)
+        ],
         "domains": [
             d
             for d in set(re.findall(domain_re, clean_text, re.IGNORECASE))
