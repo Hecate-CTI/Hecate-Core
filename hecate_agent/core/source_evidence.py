@@ -20,6 +20,7 @@ import ipaddress
 import json
 import logging
 import re
+import socket  # noqa: F401
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
