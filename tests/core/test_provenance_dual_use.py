@@ -178,3 +178,54 @@ def test_feed_hashes_of_the_wrong_length_are_dropped() -> None:
         }
     )
     assert [r.value for r in records] == [good_sha1, "0e00adb0a5ca285b838af623c753b6ff"]
+
+
+def test_badge_and_scaffolding_hosts_get_no_rule() -> None:
+    """Badge and CI hosts quoted in READMEs are scaffolding/placeholders and get no rule."""
+    from hecate_agent.core.provenance import IndicatorRecord, mark_placeholders, placements
+
+    records = [
+        IndicatorRecord(value="img.shields.io", type="domain", source="cti"),
+        IndicatorRecord(value="shields.io", type="domain", source="cti"),
+        IndicatorRecord(value="badge.fury.io", type="domain", source="cti"),
+        IndicatorRecord(value="codecov.io", type="domain", source="cti"),
+        IndicatorRecord(value="hxxps://img[.]shields[.]io/badge/license-mit-blue.svg", type="url", source="cti"),
+        IndicatorRecord(value="evil-c2-server.com", type="domain", source="cti"),
+    ]
+    marked = mark_placeholders(records)
+    assert "img.shields.io" in marked
+    assert "shields.io" in marked
+    assert "badge.fury.io" in marked
+    assert "codecov.io" in marked
+    assert "evil-c2-server.com" not in marked
+    # Badge records get no placements, but evil-c2-server.com does
+    assert not placements(records[0])
+    assert not placements(records[1])
+    assert bool(placements(records[-1]))
+
+
+def test_asset_extensions_not_well_formed_domains() -> None:
+    """Image badges, graphics and code assets are not well-formed domain indicators."""
+    from hecate_agent.core.provenance import records_from_cti, well_formed
+
+    assert not well_formed("20differential-success.svg", "domain")
+    assert not well_formed("license-mit-blue.svg", "domain")
+    assert not well_formed("badge.png", "domain")
+    assert not well_formed("font.woff2", "domain")
+    assert well_formed("evil-c2.com", "domain")
+
+    records = records_from_cti(
+        {
+            "domain": [
+                "20differential-success.svg",
+                "license-mit-blue.svg",
+                "malicious-c2.ru",
+            ],
+            "hostname": [
+                "avatar.png",
+                "c2.evil-corp.com",
+            ],
+        }
+    )
+    assert [r.value for r in records] == ["malicious-c2.ru", "c2.evil-corp.com"]
+

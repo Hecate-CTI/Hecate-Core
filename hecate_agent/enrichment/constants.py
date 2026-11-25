@@ -84,5 +84,23 @@ _KNOWN_PUBLISHER_DOMAINS: Set[str] = {
     "cve.mitre.org",
     "cvedetails.com",
     "first.org",
+    # Badge, documentation, CI and developer infrastructure often quoted in READMEs/reports
+    "shields.io",
+    "img.shields.io",
+    "badge.fury.io",
+    "badgen.net",
+    "codecov.io",
+    "coveralls.io",
+    "travis-ci.org",
+    "travis-ci.com",
+    "readthedocs.org",
+    "readthedocs.io",
+    "user-images.githubusercontent.com",
+    "githubassets.com",
+    "gravatar.com",
+    "pypi.org",
+    "npmjs.com",
+    "pkg.go.dev",
+    "crates.io",
 }
 
