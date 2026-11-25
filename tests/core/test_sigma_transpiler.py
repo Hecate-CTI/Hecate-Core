@@ -438,3 +438,74 @@ level: medium
         # clear_cache clears the dictionary
         SigmaTranspiler.clear_cache()
         assert len(_BACKEND_CACHE) == 0
+
+    def test_dns_kql_supports_standard_asim_fields(self):
+        rule = """
+title: ASIM DNS multi-field query
+id: 5ad689ca-013c-4b3b-98ee-1a8f34a7e813
+status: experimental
+logsource:
+  category: dns_query
+  product: windows
+detection:
+  selection:
+    QueryName: evil.example.com
+    DestinationIp: 1.1.1.1
+    QueryType: A
+  condition: selection
+"""
+        result = SigmaTranspiler().transpile(rule, [SigmaTranspiler.TARGET_MDE])[SigmaTranspiler.TARGET_MDE]
+        assert result.success, result.error_message
+        assert result.query.startswith("_Im_Dns | where ")
+        assert 'DnsQuery =~ "evil.example.com"' in result.query
+        assert 'DstIpAddr =~ "1.1.1.1"' in result.query
+        assert 'DnsQueryType =~ "A"' in result.query
+
+    def test_linux_and_macos_network_connection_with_initiated(self):
+        linux_rule = """
+title: Linux Outbound Network Connection
+id: 6ad689ca-013c-4b3b-98ee-1a8f34a7e814
+status: experimental
+logsource:
+  category: network_connection
+  product: linux
+detection:
+  selection:
+    DestinationIp: 198.51.100.1
+    DestinationPort: 443
+    Initiated: true
+  condition: selection
+"""
+        transpiler = SigmaTranspiler()
+        res_linux = transpiler.transpile(linux_rule)
+        # Elastic EQL maps Initiated to network.direction
+        assert res_linux[SigmaTranspiler.TARGET_ELASTIC].success
+        assert "network.direction" in res_linux[SigmaTranspiler.TARGET_ELASTIC].query
+        # Rapid7 LEQL handles boolean Initiated mapped to direction
+        assert res_linux[SigmaTranspiler.TARGET_RAPID7].success
+        assert "direction=true" in res_linux[SigmaTranspiler.TARGET_RAPID7].query
+        # SentinelOne S1QL handles Initiated
+        assert res_linux[SigmaTranspiler.TARGET_SENTINELONE].success
+        assert 'EndpointOS = "linux"' in res_linux[SigmaTranspiler.TARGET_SENTINELONE].query
+        assert "198.51.100.1" in res_linux[SigmaTranspiler.TARGET_SENTINELONE].query
+
+        macos_rule = """
+title: macOS Outbound Network Connection
+id: 7ad689ca-013c-4b3b-98ee-1a8f34a7e815
+status: experimental
+logsource:
+  category: network_connection
+  product: macos
+detection:
+  selection:
+    DestinationIp: 203.0.113.50
+    Initiated: true
+  condition: selection
+"""
+        res_mac = transpiler.transpile(macos_rule)
+        assert res_mac[SigmaTranspiler.TARGET_ELASTIC].success
+        assert "destination.ip" in res_mac[SigmaTranspiler.TARGET_ELASTIC].query
+        assert res_mac[SigmaTranspiler.TARGET_SENTINELONE].success
+        assert 'EndpointOS = "osx"' in res_mac[SigmaTranspiler.TARGET_SENTINELONE].query
+        assert res_mac[SigmaTranspiler.TARGET_SPLUNK].success
+        assert "203.0.113.50" in res_mac[SigmaTranspiler.TARGET_SPLUNK].query
