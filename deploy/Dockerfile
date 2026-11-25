@@ -10,11 +10,15 @@ RUN useradd -m -u 1000 -s /bin/bash hunter
 
 WORKDIR /app
 
-# Install dependencies before copying source for better layer caching
-COPY pyproject.toml README.md ./
+# Install uv for reproducible locked dependency builds
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+
+# Install dependencies from uv.lock before copying source for better layer caching
+COPY pyproject.toml README.md uv.lock ./
 COPY hecate_agent/ ./hecate_agent/
 
-RUN pip install --no-cache-dir -e ".[all]"
+ENV PATH="/app/.venv/bin:$PATH"
+RUN uv sync --locked --all-extras --no-dev
 
 # Persistent workspace for hunt data (mounted as a volume)
 RUN mkdir -p /workspace && chown hunter:hunter /workspace
