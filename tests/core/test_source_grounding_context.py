@@ -9,7 +9,7 @@ from hecate_agent.core import source_evidence as se
 from hecate_agent.core.provenance import routable_indicators
 from hecate_agent.core.technique_evidence import map_behaviours, technique_support
 
-REVISION = "7015f6a73ab3d67fed5fbfc277ecfb88a74c2a86"
+REVISION = "a" * 40  # Synthetic Git SHA1; no live patch or sample lookup.
 PATCH = f"https://github.com/signalwire/freeswitch/commit/{REVISION}"
 
 
