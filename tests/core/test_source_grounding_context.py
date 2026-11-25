@@ -13,8 +13,11 @@ REVISION = "a" * 40  # Synthetic Git SHA1; no live patch or sample lookup.
 PATCH = f"https://github.com/signalwire/freeswitch/commit/{REVISION}"
 
 
-def test_patch_reference_does_not_become_a_hash_indicator() -> None:
-    assert extract_indicators(f"Fixed in 1.11.3. Vendor patch: {PATCH}")["hashes"] == []
+@pytest.mark.parametrize("reference", [PATCH, f"[{REVISION}]({PATCH})", PATCH.upper(),
+    f"https://gitlab.com/example/project/-/commit/{REVISION}",
+    f"https://bitbucket.org/example/project/commits/{REVISION}"])
+def test_patch_reference_does_not_become_a_hash_indicator(reference: str) -> None:
+    assert extract_indicators(f"Fixed in 1.11.3. Vendor patch: {reference}")["hashes"] == []
 
 
 def test_patch_reference_cannot_be_promoted_by_a_model_or_feed_hash_label() -> None:

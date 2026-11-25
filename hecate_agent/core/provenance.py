@@ -178,7 +178,12 @@ def revision_reference_passage(text: str, value: str) -> str:
     text = refang(text or "")
     mentions = list(re.finditer(r"(?<![a-f0-9])" + re.escape(value) + r"(?![a-f0-9])", text, re.I))
     revisions = [m for m in _REVISION_URL.finditer(text) if m.group("revision").lower() == value.lower()]
-    if mentions and all(any(m.span() == url.span("revision") for url in revisions) for m in mentions):
+    reference_spans = {url.span("revision") for url in revisions}
+    for url in revisions:
+        label = re.search(r"\[(" + re.escape(value) + r")\]\($", text[:url.start()], re.I)
+        if label:
+            reference_spans.add(label.span(1))
+    if mentions and all(m.span() in reference_spans for m in mentions):
         return revisions[0].group()
     return ""
 
