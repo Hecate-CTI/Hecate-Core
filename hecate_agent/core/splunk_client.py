@@ -4,6 +4,7 @@ This module provides direct Splunk API integration using authentication tokens.
 Use this when MCP integration is not available or for programmatic access.
 """
 
+import re
 import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin
@@ -11,6 +12,13 @@ from urllib.parse import urljoin
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+
+def _search_query(query: str) -> str:
+    query = query.lstrip()
+    if not query:
+        raise ValueError("Empty Splunk search query")
+    return query if query.startswith("|") or re.match(r"search(?:\s|$)", query) else f"search {query}"
 
 
 class SplunkClient:
@@ -125,7 +133,13 @@ class SplunkClient:
         response.raise_for_status()
 
         if json_response:
-            return response.json()
+            payload = response.json()
+            if isinstance(payload, dict):
+                errors = [str(m.get("text", "Unspecified server error")) for m in (payload.get("messages") or [])
+                          if isinstance(m, dict) and str(m.get("type", "")).upper() in ("ERROR", "FATAL")]
+                if errors:
+                    raise RuntimeError("Splunk API search error: " + "; ".join(errors))
+            return payload
         return response
 
     def test_connection(self) -> Dict[str, Any]:
@@ -177,7 +191,7 @@ class SplunkClient:
         """
         # Use oneshot search for quick results (no job creation)
         data = {
-            "search": query if query.startswith("search") else f"search {query}",
+            "search": _search_query(query),
             "earliest_time": earliest_time,
             "latest_time": latest_time,
             "max_count": max_count,
@@ -218,7 +232,7 @@ class SplunkClient:
             >>> results = client.get_search_results(sid)
         """
         data = {
-            "search": query if query.startswith("search") else f"search {query}",
+            "search": _search_query(query),
             "earliest_time": earliest_time,
             "latest_time": latest_time,
             "output_mode": "json",
@@ -264,6 +278,8 @@ class SplunkClient:
             # Check if job is done
             if "entry" in status and len(status["entry"]) > 0:
                 content = status["entry"][0].get("content", {})
+                if content.get("dispatchState") == "FAILED":
+                    raise RuntimeError("Splunk search job failed; query results are unavailable")
                 if content.get("isDone"):
                     return True
 
