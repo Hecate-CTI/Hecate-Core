@@ -218,9 +218,17 @@ def observed_commands(
                 rest = sentence[match.end() :].split()
                 tokens: List[str] = []
                 for token in rest[:12]:
+                    # Inline Markdown closes the quoted command. Do not fold
+                    # its backtick/colon or the following explanation into a
+                    # process predicate ("SPHardwareDataType`:" / "filename]`:").
+                    closes_code = "`" in token
+                    token = token.split("`", 1)[0]
                     if _STOP_RE.search(token):
                         break
-                    tokens.append(token)
+                    if token:
+                        tokens.append(token)
+                    if closes_code:
+                        break
                 if not _command_shaped(program, match.group("prog"), tokens, platform):
                     continue
                 argument = _distinctive(tokens, program)
