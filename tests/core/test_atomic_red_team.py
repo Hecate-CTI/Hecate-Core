@@ -10,6 +10,16 @@ from hecate_agent.core.atomic_red_team import (
 
 @pytest.mark.unit
 class TestAtomicRedTeam:
+    @pytest.mark.parametrize("technique", ["T1105", "T1027", "T1070.004", "T1036.005", "T1033", "T1059.001"])
+    def test_specialized_events_obey_non_windows_platform_scope(self, technique):
+        import json
+        from hecate_agent.core.atomic_red_team import synthesize_atomic_telemetry
+
+        events = synthesize_atomic_telemetry(technique, platforms=["macOS"])
+        encoded = json.dumps(events).lower()
+        for windows_artifact in ("certutil", "cipher.exe", "whoami.exe", "svchost.exe", "powershell.exe", "c:\\\\"):
+            assert windows_artifact not in encoded
+
     def test_get_atomic_tests_curated_technique(self):
         tests = get_atomic_tests("T1003.001")
         assert len(tests) >= 1

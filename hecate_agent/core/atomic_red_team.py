@@ -600,6 +600,10 @@ def synthesize_atomic_telemetry(
     events: Dict[str, List[Dict[str, Any]]] = {}
 
     def add(cat: str, evt: Dict[str, Any]) -> None:
+        # Specialized emitters bypass get_atomic_tests(), so filter their
+        # events too. A macOS replay must never inherit certutil/cipher samples.
+        if not _is_test_compatible_with_platforms({"command": json.dumps(evt)}, platforms):
+            return
         bucket = events.setdefault(cat, [])
         if evt not in bucket:
             bucket.append(evt)
