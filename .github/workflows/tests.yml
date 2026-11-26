@@ -118,7 +118,7 @@ jobs:
       run: echo "month=$(date +'%Y-%m')" >> $GITHUB_OUTPUT
 
     - name: Cache STIX Data
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ~/.hecate/stix-data
         key: stix-data-${{ steps.date.outputs.month }}
