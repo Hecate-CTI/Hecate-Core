@@ -88,7 +88,7 @@ jobs:
       # The action can fail before it uploads (a TLS error fetching its uploader),
       # which fail_ci_if_error does not cover. Coverage reporting must not fail the build.
       continue-on-error: true
-      uses: codecov/codecov-action@v4
+      uses: codecov/codecov-action@v7
       with:
         file: ./coverage.xml
         flags: unittests
