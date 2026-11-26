@@ -56,6 +56,41 @@ class QueryValidationResult:
         return f"INVALID (score: {self.sanity_score:.2f}): {errs}"
 
 
+def _split_unquoted_pipe(query: str) -> List[str]:
+    """Split query on '|' characters that are not within single or double quotes."""
+    stages: List[str] = []
+    current: List[str] = []
+    in_quote: Optional[str] = None
+    escaped = False
+
+    for char in query:
+        if escaped:
+            current.append(char)
+            escaped = False
+            continue
+
+        if char == "\\":
+            current.append(char)
+            escaped = True
+            continue
+
+        if in_quote:
+            current.append(char)
+            if char == in_quote:
+                in_quote = None
+        elif char in ('"', "'"):
+            in_quote = char
+            current.append(char)
+        elif char == "|":
+            stages.append("".join(current).strip())
+            current = []
+        else:
+            current.append(char)
+
+    stages.append("".join(current).strip())
+    return stages
+
+
 class QueryValidator:
     """Dialect-aware query syntax and grammar validator."""
 
@@ -372,8 +407,8 @@ class QueryValidator:
         """Validate CrowdStrike Falcon CQL / LogScale syntax."""
         issues: List[ValidationIssue] = []
         # CQL queries typically consist of key-value predicates or pipelined stages
-        if "|" in query:
-            stages = [s.strip() for s in query.split("|")]
+        stages = _split_unquoted_pipe(query)
+        if len(stages) > 1:
             for stage in stages:
                 if not stage:
                     issues.append(
@@ -433,8 +468,8 @@ class QueryValidator:
         """Validate Splunk SPL search processing language syntax."""
         issues: List[ValidationIssue] = []
         # If piped search commands are used, validate command keywords
-        if "|" in query:
-            stages = [s.strip() for s in query.split("|")]
+        stages = _split_unquoted_pipe(query)
+        if len(stages) > 1:
             for stage in stages[1:]:
                 if not stage:
                     issues.append(

@@ -92,6 +92,11 @@ class TestQueryValidator:
         res_valid = validator.validate("splunk_spl", valid_q)
         assert res_valid.is_valid is True
 
+        # Valid SPL with quoted pipes
+        quoted_pipe_q = '"cs-uri-stem" IN ("*/salt/*") "cs-uri-query" IN ("*|*", "*||*")'
+        res_quoted = validator.validate("splunk_spl", quoted_pipe_q)
+        assert res_quoted.is_valid is True
+
         # Empty pipe stage
         invalid_q = 'Image="*\\\\cmd.exe" | '
         res_invalid = validator.validate("splunk_spl", invalid_q)
