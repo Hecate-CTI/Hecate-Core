@@ -72,7 +72,9 @@ hecate-agent hunt new --title "Reviewed hypothesis" --technique T1003.001 --rese
 Review the generated output in the selected workspace. It is planning content;
 synthetic matching, a promotion check or native query export does not prove live
 coverage. To run existing catalog hunts without generating new ones, use Runner's
-`sweep` workflow and a separately configured query provider.
+`sweep` workflow and a separately configured query provider. For production autonomous
+nodes running 24/7 continuous threat intelligence intake, scheduled sweeps, and background
+systemd services, follow [Runner background services](https://github.com/Hecate-Org/Hecate-Runner/blob/main/docs/SERVICES.md).
 
 ## Tests and docs
 
