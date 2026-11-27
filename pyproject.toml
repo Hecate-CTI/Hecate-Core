@@ -58,7 +58,7 @@ dependencies = [
 
 [project.optional-dependencies]
 sigma = [
-    "pysigma>=1.0.1,<2.0.0",
+    "pysigma>=1.0.1,<3.0.0",
     "pysigma-backend-kusto>=1.0.0",
     "pysigma-backend-crowdstrike>=3.0.0",
     "pysigma-backend-splunk>=2.1.0",
@@ -70,7 +70,7 @@ dev = [
     # Exercised by the Sigma validation tests. In [dev] rather than only
     # [sigma] so CI actually runs them -- a validator whose tests silently
     # skip is the same failure it exists to prevent.
-    "pysigma>=1.0.1,<2.0.0",
+    "pysigma>=1.0.1,<3.0.0",
     "pysigma-backend-kusto>=1.0.0",
     "pysigma-backend-crowdstrike>=3.0.0",
     "pysigma-backend-splunk>=2.1.0",
@@ -86,7 +86,7 @@ dev = [
     "bandit[toml]>=1.7.0",
     "pre-commit>=3.0.0",
     "types-PyYAML>=6.0.0",
-    "mcp[cli]>=1.0.0,<2.0.0",
+    "mcp[cli]>=1.0.0,<3.0.0",
     "scikit-learn>=1.0.0",
 ]
 docs = [
@@ -135,10 +135,10 @@ llm = [
 ]
 # MCP server
 mcp = [
-    "mcp[cli]>=1.0.0,<2.0.0",  # 2.0.0 removed mcp.server.fastmcp (hecate_agent/mcp/server.py's import path); unverified against it
+    "mcp[cli]>=1.0.0,<3.0.0",  # 2.0.0 removed mcp.server.fastmcp (hecate_agent/mcp/server.py's import path); unverified against it
 ]
 all = [
-    "pysigma>=1.0.1,<2.0.0",
+    "pysigma>=1.0.1,<3.0.0",
     "pysigma-backend-kusto>=1.0.0",
     "pysigma-backend-crowdstrike>=3.0.0",
     "pysigma-backend-splunk>=2.1.0",
@@ -148,7 +148,7 @@ all = [
     "scikit-learn>=1.0.0",
     "requests>=2.25.0",
     "tavily-python>=0.3.0",
-    "mcp[cli]>=1.0.0,<2.0.0",  # 2.0.0 removed mcp.server.fastmcp (hecate_agent/mcp/server.py's import path); unverified against it
+    "mcp[cli]>=1.0.0,<3.0.0",  # 2.0.0 removed mcp.server.fastmcp (hecate_agent/mcp/server.py's import path); unverified against it
     "mitreattack-python>=5.0.0",
 ]
 
