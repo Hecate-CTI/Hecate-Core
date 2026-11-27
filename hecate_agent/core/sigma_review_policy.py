@@ -4,16 +4,21 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Optional
 
+from hecate_agent.core.sigma_quality import quality_block_reason
 
-def review_block_reason(document: Any) -> Optional[str]:
+
+def review_block_reason(document: Any, *, filename: str = "") -> Optional[str]:
     """A rejection blocks use even when its explanation has no verified quote.
 
     Quote verification describes the evidence for a review, not permission to
     ignore its verdict. Rejected and revision-required proposals remain diagnostics,
-    not accepted rules.
+    not accepted rules. Echo/README titles and documentation IOCs are also blocked.
     """
     if not isinstance(document, Mapping):
         return None
+    quality = quality_block_reason(document, filename=filename)
+    if quality:
+        return quality
     review = document.get("hecate_review")
     if not isinstance(review, Mapping) or str(review.get("verdict", "")).strip().lower() not in {"reject", "revise"}:
         return None

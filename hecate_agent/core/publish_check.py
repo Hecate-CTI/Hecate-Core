@@ -225,9 +225,12 @@ def _check_rule(name: str, raw: str) -> list[Finding]:
         pass
     from hecate_agent.core.sigma_review_policy import review_block_reason
 
-    reason = review_block_reason(doc)
+    reason = review_block_reason(doc, filename=target)
     if reason:
-        add("rule_review_rejected", "block", f"Rule was rejected during review: {reason}")
+        # Echo/docnet quality blocks and hecate_review reject/revise share this path.
+        check = "rule_quality" if "hunt-worthy" in reason or "documentation/example" in reason else "rule_review_rejected"
+        prefix = "" if check == "rule_quality" else "Rule was rejected during review: "
+        add(check, "block", f"{prefix}{reason}")
     if _SECRET_RE.search(raw):
         add("credential", "block", "High-confidence credential material in the rule")
     return findings
